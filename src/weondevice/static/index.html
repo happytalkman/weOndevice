@@ -499,79 +499,186 @@
       document.getElementById('gem-msg').textContent = 'Gemini Live 키 저장 완료! 하단 ✨ Gemini Live 버튼을 누르세요.';
     }
 
+    let cachedVoices = [];
+    if ('speechSynthesis' in window) {
+      cachedVoices = window.speechSynthesis.getVoices() || [];
+      window.speechSynthesis.onvoiceschanged = () => {
+        cachedVoices = window.speechSynthesis.getVoices() || [];
+      };
+    }
+
     function pickKoreanVoice() {
-      const voices = window.speechSynthesis.getVoices() || [];
+      const voices = (cachedVoices && cachedVoices.length) ? cachedVoices : (window.speechSynthesis.getVoices() || []);
       return (
-        voices.find(v => v.lang.startsWith('ko') && /natural|online|google/i.test(v.name)) ||
+        voices.find(v => v.lang.startsWith('ko') && /natural|sunhi|injoon|online/i.test(v.name)) ||
+        voices.find(v => v.lang.startsWith('ko') && /google/i.test(v.name)) ||
         voices.find(v => v.lang.startsWith('ko')) ||
         null
       );
     }
 
+    function cleanTextForSpeech(text) {
+      return (text || '')
+        .replace(/https?:\/\/\S+/g, '')
+        .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+        .replace(/[`*_#<>|~]/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    }
+
+    function splitKoreanSentences(text) {
+      const parts = text.match(/[^.!?\n]+[.!?\n]*/g) || [text];
+      return parts.map(s => s.trim()).filter(Boolean);
+    }
+
+    let isSpeaking = false;
+    let recognition = null;
+    let listening = false;
+    let restartTimer = null;
+
+    function scheduleVoiceRestart(delayMs = 350) {
+      if (restartTimer) clearTimeout(restartTimer);
+      restartTimer = setTimeout(() => {
+        const hf = document.getElementById('handsfree-toggle');
+        if (hf && hf.checked && !listening && !isSpeaking && !liveActive) {
+          startVoiceRecognition(true);
+        }
+      }, delayMs);
+    }
+
     function speakText(text) {
       if (!('speechSynthesis' in window)) return;
       window.speechSynthesis.cancel();
-      const clean = text.replace(/[`*#_]/g, ' ').slice(0, 600);
-      const utter = new SpeechSynthesisUtterance(clean);
-      utter.lang = 'ko-KR';
-      utter.rate = 1.05;
-      const v = pickKoreanVoice();
-      if (v) utter.voice = v;
-      const orb = document.querySelector('.orb');
-      utter.onstart = () => orb.classList.add('speaking');
-      utter.onend = () => {
-        orb.classList.remove('speaking');
-        if (document.getElementById('handsfree-toggle').checked && !listening && !liveActive) {
-          startVoiceRecognition();
-        }
-      };
-      window.speechSynthesis.speak(utter);
-    }
-
-    let recognition = null;
-    let listening = false;
-    function startVoiceRecognition() {
-      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!SR) {
-        alert('이 브라우저는 Web Speech API 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해 주세요.');
+      const clean = cleanTextForSpeech(text).slice(0, 1200);
+      if (!clean) {
+        scheduleVoiceRestart(300);
         return;
       }
-      if (window.speechSynthesis) window.speechSynthesis.cancel();
+
+      // Pause STT while AI is speaking so mic doesn't pick up speaker audio
+      if (listening && recognition) {
+        try { recognition.abort(); } catch (_) {}
+      }
+
+      const sentences = splitKoreanSentences(clean);
+      const voice = pickKoreanVoice();
+      const orb = document.querySelector('.orb');
+      isSpeaking = true;
+      orb.classList.add('speaking');
+
+      let idx = 0;
+      function speakNext() {
+        if (!isSpeaking || idx >= sentences.length) {
+          isSpeaking = false;
+          orb.classList.remove('speaking');
+          scheduleVoiceRestart(350);
+          return;
+        }
+        const utter = new SpeechSynthesisUtterance(sentences[idx++]);
+        utter.lang = 'ko-KR';
+        utter.rate = 1.03;
+        utter.pitch = 1.0;
+        if (voice) utter.voice = voice;
+        utter.onend = () => speakNext();
+        utter.onerror = () => speakNext();
+        window.speechSynthesis.speak(utter);
+      }
+      speakNext();
+    }
+
+    function startVoiceRecognition(isAuto = false) {
+      if (listening || liveActive || isSpeaking) return;
+      const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+      if (!SR) {
+        if (!isAuto) {
+          alert('이 브라우저는 Web Speech API 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해 주세요.');
+        }
+        return;
+      }
       const orb = document.querySelector('.orb');
       const micBtn = document.getElementById('mic-btn');
       recognition = new SR();
       recognition.lang = 'ko-KR';
       recognition.interimResults = false;
+      recognition.continuous = false;
+
       recognition.onstart = () => {
         listening = true;
         orb.classList.add('listening');
-        micBtn.textContent = '⏹ 듣는 중...';
+        micBtn.textContent = '🎙️ 듣는 중...';
       };
       recognition.onresult = (e) => {
-        const transcript = e.results[0][0].transcript;
+        const transcript = (e.results[0][0].transcript || '').trim();
+        if (!transcript) return;
+        if (window.speechSynthesis) {
+          isSpeaking = false;
+          window.speechSynthesis.cancel();
+        }
         document.getElementById('chat-input').value = transcript;
         sendChat();
       };
-      recognition.onerror = () => {
+      recognition.onerror = (e) => {
         listening = false;
         orb.classList.remove('listening');
         micBtn.textContent = '🎤 음성';
+        if (e && (e.error === 'not-allowed' || e.error === 'service-not-allowed')) {
+          return;
+        }
       };
       recognition.onend = () => {
         listening = false;
         orb.classList.remove('listening');
         micBtn.textContent = '🎤 음성';
+        const hf = document.getElementById('handsfree-toggle');
+        if (hf && hf.checked && !isSpeaking && !liveActive) {
+          scheduleVoiceRestart(350);
+        }
       };
-      recognition.start();
+      try {
+        recognition.start();
+      } catch (_) {
+        listening = false;
+      }
     }
 
     function toggleVoice() {
+      const hf = document.getElementById('handsfree-toggle');
       if (listening && recognition) {
-        document.getElementById('handsfree-toggle').checked = false;
+        if (hf) hf.checked = false;
+        if (restartTimer) clearTimeout(restartTimer);
         recognition.stop();
         return;
       }
-      startVoiceRecognition();
+      if (hf) hf.checked = true;
+      startVoiceRecognition(false);
+    }
+
+    function initHandsFreeVoice() {
+      const hf = document.getElementById('handsfree-toggle');
+      if (!hf) return;
+      hf.addEventListener('change', () => {
+        if (hf.checked) {
+          startVoiceRecognition(false);
+        } else {
+          if (restartTimer) clearTimeout(restartTimer);
+          if (listening && recognition) recognition.stop();
+        }
+      });
+
+      // Try starting immediately; if browser requires a user gesture first, start on first click/key anywhere
+      setTimeout(() => {
+        if (hf.checked && !listening && !liveActive) {
+          startVoiceRecognition(true);
+        }
+      }, 600);
+
+      const unlockAndListen = () => {
+        if (hf.checked && !listening && !isSpeaking && !liveActive) {
+          startVoiceRecognition(true);
+        }
+      };
+      document.addEventListener('pointerdown', unlockAndListen, { once: true });
+      document.addEventListener('keydown', unlockAndListen, { once: true });
     }
 
     let liveWs = null;
@@ -741,6 +848,7 @@
     }
 
     refreshStatus();
+    initHandsFreeVoice();
   </script>
 </body>
 </html>

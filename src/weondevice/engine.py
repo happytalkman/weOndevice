@@ -188,7 +188,8 @@ class OpenRouterFreeEngine(InferenceEngine):
             "model": target_model,
             "messages": messages_to_dicts(messages),
             "temperature": temperature,
-            "max_tokens": max(max_tokens, 1024),
+            "max_tokens": max(max_tokens, 1500),
+            "reasoning": {"exclude": True},
         }
         headers = {
             "Authorization": f"Bearer {api_key}",

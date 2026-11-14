@@ -7,21 +7,49 @@ import json
 import os
 from typing import Any, Dict, List
 
+import httpx
 import websockets
 from fastapi import WebSocket, WebSocketDisconnect
 
 from weondevice.engine import load_engine_config
 
 DEFAULT_GEMINI_LIVE_MODELS = [
-    "models/gemini-2.5-flash-native-audio-preview-12-2025",
+    "models/gemini-3.8-live",
+    "models/gemini-2.5-flash-native-audio-latest",
     "models/gemini-2.5-flash-native-audio-preview-09-2025",
+    "models/gemini-2.5-flash-native-audio-preview-12-2025",
     "models/gemini-3.1-flash-live-preview",
+    "models/gemini-live-2.5-flash-preview",
 ]
 DEFAULT_GEMINI_LIVE_MODEL = DEFAULT_GEMINI_LIVE_MODELS[0]
 GEMINI_WS_BASE = (
     "wss://generativelanguage.googleapis.com/ws/"
     "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
 )
+
+
+async def _discover_live_models(api_key: str) -> List[str]:
+    """Query Gemini API for models supporting bidiGenerateContent on this key."""
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=8.0, trust_env=False) as client:
+            resp = await client.get(url)
+            if resp.status_code != 200:
+                return []
+            models = resp.json().get("models", [])
+            live = [
+                m["name"]
+                for m in models
+                if "bidiGenerateContent" in (m.get("supportedGenerationMethods") or [])
+            ]
+            # Prefer known best models first, then any remaining discovered live models
+            ordered = [m for m in DEFAULT_GEMINI_LIVE_MODELS if m in live]
+            for m in live:
+                if m not in ordered:
+                    ordered.append(m)
+            return ordered
+    except Exception:
+        return []
 
 
 def _tool_declarations() -> List[Dict[str, Any]]:
@@ -74,30 +102,30 @@ def _tool_declarations() -> List[Dict[str, Any]]:
     ]
 
 
-def _build_setup_msg(model: str) -> Dict[str, Any]:
-    return {
-        "setup": {
-            "model": model,
-            "generationConfig": {
-                "responseModalities": ["AUDIO"],
-                "speechConfig": {
-                    "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
-                },
+def _build_setup_msg(model: str, include_tools: bool = True) -> Dict[str, Any]:
+    setup: Dict[str, Any] = {
+        "model": model,
+        "generationConfig": {
+            "responseModalities": ["AUDIO"],
+            "speechConfig": {
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
             },
-            "systemInstruction": {
-                "parts": [
-                    {
-                        "text": (
-                            "You are Jarvis-RG, a warm, natural Korean on-device personal voice assistant. "
-                            "Always respond concisely in natural spoken Korean. "
-                            "Use your local tools (file_finder, ripgrep_search, system_status) whenever the user asks about local files, code, or laptop status."
-                        )
-                    }
-                ]
-            },
-            "tools": _tool_declarations(),
-        }
+        },
+        "systemInstruction": {
+            "parts": [
+                {
+                    "text": (
+                        "You are Jarvis-RG, a warm, natural Korean on-device personal voice assistant. "
+                        "Always respond concisely in natural spoken Korean. "
+                        "Use your local tools (file_finder, ripgrep_search, system_status) whenever the user asks about local files, code, or laptop status."
+                    )
+                }
+            ]
+        },
     }
+    if include_tools:
+        setup["tools"] = _tool_declarations()
+    return {"setup": setup}
 
 
 async def _connect_gemini_ws(uri: str):
@@ -112,7 +140,6 @@ async def _connect_gemini_ws(uri: str):
             return await websockets.connect(uri, **kwargs)
         except Exception as exc:
             last_exc = exc
-            # If server rejected with an HTTP status (e.g. 400/403/404), don't retry proxy
             if hasattr(exc, "response"):
                 raise
     assert last_exc is not None
@@ -133,11 +160,12 @@ async def relay_gemini_live(client_ws: WebSocket, agent: Any) -> None:
         await client_ws.close()
         return
 
-    candidates = (
-        [configured_model] + [m for m in DEFAULT_GEMINI_LIVE_MODELS if m != configured_model]
-        if configured_model
-        else list(DEFAULT_GEMINI_LIVE_MODELS)
-    )
+    discovered = await _discover_live_models(api_key)
+    candidates: List[str] = []
+    for m in ([configured_model] if configured_model else []) + discovered + DEFAULT_GEMINI_LIVE_MODELS:
+        if m and m not in candidates:
+            candidates.append(m)
+
     uri = f"{GEMINI_WS_BASE}?key={api_key}"
 
     gemini_ws = None
@@ -145,31 +173,32 @@ async def relay_gemini_live(client_ws: WebSocket, agent: Any) -> None:
     last_error = ""
 
     try:
-        for candidate in candidates:
-            ws = None
-            try:
-                ws = await _connect_gemini_ws(uri)
-                await ws.send(json.dumps(_build_setup_msg(candidate)))
-                raw_setup = await asyncio.wait_for(ws.recv(), timeout=15)
-                setup_ack = json.loads(raw_setup)
-                if "setupComplete" in setup_ack:
+        for include_tools in (True, False):
+            for candidate in candidates:
+                ws = None
+                try:
+                    ws = await _connect_gemini_ws(uri)
+                    await ws.send(json.dumps(_build_setup_msg(candidate, include_tools=include_tools)))
+                    raw_setup = await asyncio.wait_for(ws.recv(), timeout=15)
+                    setup_ack = json.loads(raw_setup)
+                    if "setupComplete" in setup_ack:
+                        gemini_ws = ws
+                        active_model = candidate
+                        break
                     gemini_ws = ws
                     active_model = candidate
                     break
-                # Unexpected first message, still accept if not error
-                gemini_ws = ws
-                active_model = candidate
+                except Exception as exc:
+                    last_error = str(exc)
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                    if "did not receive a valid HTTP response" in last_error or "403" in last_error or "401" in last_error:
+                        break
+            if gemini_ws is not None or "did not receive a valid HTTP response" in last_error or "403" in last_error or "401" in last_error:
                 break
-            except Exception as exc:
-                last_error = str(exc)
-                if ws is not None:
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                # Stop trying other models if handshake/auth itself failed
-                if "did not receive a valid HTTP response" in last_error or "403" in last_error or "401" in last_error:
-                    break
 
         if gemini_ws is None:
             raise RuntimeError(last_error or "Gemini Live 연결에 실패했습니다.")
