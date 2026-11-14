@@ -771,6 +771,45 @@
       scheduleVoiceRestart(500);
     }
 
+    async function startLiveMicStreaming(ws, modelName) {
+      const log = document.getElementById('chat-log');
+      log.innerHTML += `<div class="msg ai">✨ <strong>Gemini Live 실시간 음성 대화</strong> 연결됨 (${modelName}) — 지금 바로 말씀하세요!</div>`;
+      log.scrollTop = log.scrollHeight;
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      try {
+        liveCaptureCtx = new AudioCtx({ sampleRate: 16000 });
+      } catch (_) {
+        liveCaptureCtx = new AudioCtx();
+      }
+      try {
+        livePlaybackCtx = new AudioCtx({ sampleRate: 24000 });
+      } catch (_) {
+        livePlaybackCtx = new AudioCtx();
+      }
+      nextPlayTime = 0;
+      try {
+        liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (micErr) {
+        log.innerHTML += `<div class="msg ai">마이크 권한 오류: ${micErr.message || micErr}</div>`;
+        cleanupGeminiLive();
+        return;
+      }
+      liveSource = liveCaptureCtx.createMediaStreamSource(liveStream);
+      liveProc = liveCaptureCtx.createScriptProcessor(4096, 1, 1);
+      liveProc.onaudioprocess = (e) => {
+        if (!liveActive || !liveWs || liveWs.readyState !== 1) return;
+        const samples = downsampleTo16k(e.inputBuffer.getChannelData(0), liveCaptureCtx.sampleRate);
+        const b64 = pcm16ToBase64(samples);
+        liveWs.send(JSON.stringify({
+          realtimeInput: {
+            mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: b64 }]
+          }
+        }));
+      };
+      liveSource.connect(liveProc);
+      liveProc.connect(liveCaptureCtx.destination);
+    }
+
     async function toggleGeminiLive() {
       const btn = document.getElementById('live-btn');
       const orb = document.querySelector('.orb');
@@ -791,72 +830,120 @@
         window.speechSynthesis.cancel();
       }
 
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      liveWs = new WebSocket(`${proto}//${location.host}/ws/gemini-live`);
+      let session;
+      try {
+        const resp = await fetch('/api/gemini-live-session');
+        session = await resp.json();
+      } catch (err) {
+        log.innerHTML += `<div class="msg ai">Gemini Live 세션 준비 실패: ${err}</div>`;
+        scheduleVoiceRestart(500);
+        return;
+      }
+      if (session.error) {
+        log.innerHTML += `<div class="msg ai">Gemini Live 오류: ${session.error}</div>`;
+        scheduleVoiceRestart(500);
+        return;
+      }
+
       liveActive = true;
       btn.textContent = '⏹ Live 종료';
       orb.classList.add('listening');
 
-      liveWs.onmessage = async (ev) => {
-        const msg = JSON.parse(ev.data);
-        if (msg.type === 'error') {
-          log.innerHTML += `<div class="msg ai">Gemini Live 오류: ${msg.message}</div>`;
-          log.scrollTop = log.scrollHeight;
-          cleanupGeminiLive();
-        } else if (msg.type === 'ready') {
-          log.innerHTML += `<div class="msg ai">✨ <strong>Gemini Live 실시간 음성 대화</strong> 연결됨 (${msg.model || 'Live'}) — 지금 바로 말씀하세요!</div>`;
-          log.scrollTop = log.scrollHeight;
-          const AudioCtx = window.AudioContext || window.webkitAudioContext;
-          try {
-            liveCaptureCtx = new AudioCtx({ sampleRate: 16000 });
-          } catch (_) {
-            liveCaptureCtx = new AudioCtx();
-          }
-          try {
-            livePlaybackCtx = new AudioCtx({ sampleRate: 24000 });
-          } catch (_) {
-            livePlaybackCtx = new AudioCtx();
-          }
-          nextPlayTime = 0;
-          try {
-            liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          } catch (micErr) {
-            log.innerHTML += `<div class="msg ai">마이크 권한 오류: ${micErr.message || micErr}</div>`;
-            cleanupGeminiLive();
+      const models = session.models || ['models/gemini-3.8-live'];
+      let modelIdx = 0;
+
+      function connectWithModel() {
+        if (!liveActive) return;
+        const currentModel = models[modelIdx];
+        let setupDone = false;
+        const ws = new WebSocket(`${session.ws_base}?key=${encodeURIComponent(session.api_key)}`);
+        liveWs = ws;
+
+        ws.onopen = () => {
+          const setupPayload = JSON.parse(JSON.stringify(session.setup_template));
+          setupPayload.setup.model = currentModel;
+          ws.send(JSON.stringify(setupPayload));
+        };
+
+        ws.onmessage = async (ev) => {
+          const rawText = typeof ev.data === 'string' ? ev.data : await ev.data.text();
+          const data = JSON.parse(rawText);
+
+          if (!setupDone && data.setupComplete !== undefined) {
+            setupDone = true;
+            await startLiveMicStreaming(ws, currentModel);
             return;
           }
-          liveSource = liveCaptureCtx.createMediaStreamSource(liveStream);
-          liveProc = liveCaptureCtx.createScriptProcessor(4096, 1, 1);
-          liveProc.onaudioprocess = (e) => {
-            if (!liveActive || !liveWs || liveWs.readyState !== 1) return;
-            const samples = downsampleTo16k(e.inputBuffer.getChannelData(0), liveCaptureCtx.sampleRate);
-            const b64 = pcm16ToBase64(samples);
-            liveWs.send(JSON.stringify({ type: 'audio', data: b64 }));
-          };
-          liveSource.connect(liveProc);
-          liveProc.connect(liveCaptureCtx.destination);
-        } else if (msg.type === 'audio') {
-          orb.classList.add('speaking');
-          playPcm24k(msg.data);
-        } else if (msg.type === 'interrupted') {
-          stopPlaybackQueue();
-          orb.classList.remove('speaking');
-        } else if (msg.type === 'text' && msg.text) {
-          log.innerHTML += `<div class="msg ai">${msg.text}</div>`;
-          log.scrollTop = log.scrollHeight;
-        } else if (msg.type === 'turn_complete') {
-          orb.classList.remove('speaking');
-        }
-      };
-      liveWs.onerror = () => {
-        if (liveActive) {
-          log.innerHTML += `<div class="msg ai">Gemini Live WebSocket 연결이 끊어졌습니다.</div>`;
+
+          if (data.toolCall && data.toolCall.functionCalls) {
+            const responses = [];
+            for (const fc of data.toolCall.functionCalls) {
+              try {
+                const tr = await fetch('/api/gemini-tool', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ name: fc.name, args: fc.args || {} })
+                });
+                const td = await tr.json();
+                responses.push({ id: fc.id, name: fc.name, response: { result: td.result || '' } });
+              } catch (toolErr) {
+                responses.push({ id: fc.id, name: fc.name, response: { result: String(toolErr) } });
+              }
+            }
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({ toolResponse: { functionResponses: responses } }));
+            }
+            return;
+          }
+
+          const sc = data.serverContent;
+          if (sc) {
+            if (sc.interrupted) {
+              stopPlaybackQueue();
+              orb.classList.remove('speaking');
+            }
+            const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
+            for (const part of parts) {
+              if (part.inlineData && part.inlineData.data) {
+                orb.classList.add('speaking');
+                playPcm24k(part.inlineData.data);
+              } else if (part.text) {
+                log.innerHTML += `<div class="msg ai">${part.text}</div>`;
+                log.scrollTop = log.scrollHeight;
+              }
+            }
+            if (sc.turnComplete) {
+              orb.classList.remove('speaking');
+            }
+          }
+        };
+
+        ws.onerror = () => {
+          if (!setupDone && modelIdx + 1 < models.length && liveActive) {
+            modelIdx++;
+            connectWithModel();
+          } else if (liveActive) {
+            log.innerHTML += `<div class="msg ai">Gemini Live WebSocket 연결 오류가 발생했습니다.</div>`;
+            cleanupGeminiLive();
+          }
+        };
+
+        ws.onclose = (ev) => {
+          if (!liveActive) return;
+          if (!setupDone && modelIdx + 1 < models.length) {
+            modelIdx++;
+            connectWithModel();
+            return;
+          }
+          if (!setupDone) {
+            log.innerHTML += `<div class="msg ai">Gemini Live 연결 종료 (${ev.code}${ev.reason ? ': ' + ev.reason : ''})</div>`;
+            log.scrollTop = log.scrollHeight;
+          }
           cleanupGeminiLive();
-        }
-      };
-      liveWs.onclose = () => {
-        if (liveActive) cleanupGeminiLive();
-      };
+        };
+      }
+
+      connectWithModel();
     }
 
     refreshStatus();

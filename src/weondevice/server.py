@@ -14,8 +14,14 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from weondevice.agent import WeOnDeviceAgent
-from weondevice.engine import save_engine_config
-from weondevice.gemini_live import relay_gemini_live
+from weondevice.engine import load_engine_config, save_engine_config
+from weondevice.gemini_live import (
+    DEFAULT_GEMINI_LIVE_MODELS,
+    GEMINI_WS_BASE,
+    _build_setup_msg,
+    _discover_live_models,
+    relay_gemini_live,
+)
 from weondevice.tools.ripgrep_tool import (
     RUST_RG_AVAILABLE,
     run_ripgrep_files,
@@ -112,6 +118,48 @@ def config_openrouter(req: OpenRouterConfigRequest) -> Dict[str, Any]:
 def config_gemini(req: GeminiConfigRequest) -> Dict[str, Any]:
     save_engine_config(req.model_dump())
     return {"ok": True}
+
+
+class GeminiToolRequest(BaseModel):
+    name: str
+    args: Dict[str, Any] = {}
+
+
+@app.get("/api/gemini-live-session")
+async def gemini_live_session() -> Dict[str, Any]:
+    cfg = load_engine_config()
+    api_key = (os.environ.get("GEMINI_API_KEY") or cfg.get("gemini_api_key") or "").strip()
+    if not api_key:
+        return {"error": "Gemini API 키가 설정되지 않았습니다. 사이드바에서 Gemini API 키를 저장해 주세요."}
+    configured = (cfg.get("gemini_live_model") or "").strip()
+    discovered = await _discover_live_models(api_key)
+    models = []
+    for m in ([configured] if configured else []) + discovered + DEFAULT_GEMINI_LIVE_MODELS:
+        if m and m not in models:
+            models.append(m)
+    return {
+        "ws_base": GEMINI_WS_BASE,
+        "api_key": api_key,
+        "models": models,
+        "setup_template": _build_setup_msg(models[0], include_tools=True),
+    }
+
+
+@app.post("/api/gemini-tool")
+def gemini_tool(req: GeminiToolRequest) -> Dict[str, Any]:
+    agent = get_agent()
+    name = req.name
+    args = req.args or {}
+    if name == "system_status":
+        out = agent.system_tool.execute().content
+    elif name == "ripgrep_search":
+        out = agent.search_tool.execute(query=args.get("query", "")).content[:1500]
+    elif name == "file_finder":
+        out, _ = agent._route_laptop_tools(args.get("query", ""))
+        out = out or "일치하는 파일을 찾지 못했습니다."
+    else:
+        out = "Unsupported tool"
+    return {"result": out}
 
 
 @app.websocket("/ws/gemini-live")
