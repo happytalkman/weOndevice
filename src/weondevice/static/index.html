@@ -576,9 +576,24 @@
 
     let liveWs = null;
     let liveActive = false;
-    let liveAudioCtx = null;
+    let liveCaptureCtx = null;
+    let livePlaybackCtx = null;
     let liveStream = null;
+    let liveSource = null;
+    let liveProc = null;
     let nextPlayTime = 0;
+    let activeAudioSources = [];
+
+    function downsampleTo16k(float32, inRate) {
+      if (inRate === 16000) return float32;
+      const ratio = inRate / 16000;
+      const outLen = Math.floor(float32.length / ratio);
+      const out = new Float32Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        out[i] = float32[Math.floor(i * ratio)];
+      }
+      return out;
+    }
 
     function pcm16ToBase64(float32) {
       const buf = new ArrayBuffer(float32.length * 2);
@@ -593,8 +608,17 @@
       return btoa(bin);
     }
 
+    function stopPlaybackQueue() {
+      activeAudioSources.forEach(s => { try { s.stop(); } catch (_) {} });
+      activeAudioSources = [];
+      nextPlayTime = 0;
+    }
+
     function playPcm24k(b64) {
-      if (!liveAudioCtx) return;
+      if (!livePlaybackCtx) return;
+      if (livePlaybackCtx.state === 'suspended') {
+        livePlaybackCtx.resume().catch(() => {});
+      }
       const bin = atob(b64);
       const len = bin.length / 2;
       const float32 = new Float32Array(len);
@@ -605,15 +629,38 @@
         if (val >= 0x8000) val -= 0x10000;
         float32[i] = val / 0x8000;
       }
-      const audioBuf = liveAudioCtx.createBuffer(1, len, 24000);
+      const audioBuf = livePlaybackCtx.createBuffer(1, len, 24000);
       audioBuf.getChannelData(0).set(float32);
-      const src = liveAudioCtx.createBufferSource();
+      const src = livePlaybackCtx.createBufferSource();
       src.buffer = audioBuf;
-      src.connect(liveAudioCtx.destination);
-      const now = liveAudioCtx.currentTime;
+      src.connect(livePlaybackCtx.destination);
+      const now = livePlaybackCtx.currentTime;
       if (nextPlayTime < now) nextPlayTime = now;
+      src.onended = () => {
+        activeAudioSources = activeAudioSources.filter(x => x !== src);
+      };
+      activeAudioSources.push(src);
       src.start(nextPlayTime);
       nextPlayTime += audioBuf.duration;
+    }
+
+    function cleanupGeminiLive() {
+      liveActive = false;
+      stopPlaybackQueue();
+      if (liveProc) { try { liveProc.disconnect(); } catch (_) {} liveProc = null; }
+      if (liveSource) { try { liveSource.disconnect(); } catch (_) {} liveSource = null; }
+      if (liveStream) { liveStream.getTracks().forEach(t => t.stop()); liveStream = null; }
+      if (liveCaptureCtx) { try { liveCaptureCtx.close(); } catch (_) {} liveCaptureCtx = null; }
+      if (livePlaybackCtx) { try { livePlaybackCtx.close(); } catch (_) {} livePlaybackCtx = null; }
+      if (liveWs) {
+        const ws = liveWs;
+        liveWs = null;
+        try { ws.close(); } catch (_) {}
+      }
+      const orb = document.querySelector('.orb');
+      const btn = document.getElementById('live-btn');
+      if (orb) orb.classList.remove('listening', 'speaking');
+      if (btn) btn.textContent = '✨ Gemini Live';
     }
 
     async function toggleGeminiLive() {
@@ -621,12 +668,7 @@
       const orb = document.querySelector('.orb');
       const log = document.getElementById('chat-log');
       if (liveActive) {
-        liveActive = false;
-        if (liveWs) liveWs.close();
-        if (liveStream) liveStream.getTracks().forEach(t => t.stop());
-        if (liveAudioCtx) liveAudioCtx.close();
-        orb.classList.remove('listening', 'speaking');
-        btn.textContent = '✨ Gemini Live';
+        cleanupGeminiLive();
         return;
       }
 
@@ -640,31 +682,61 @@
         const msg = JSON.parse(ev.data);
         if (msg.type === 'error') {
           log.innerHTML += `<div class="msg ai">Gemini Live 오류: ${msg.message}</div>`;
-          toggleGeminiLive();
-        } else if (msg.type === 'ready') {
-          log.innerHTML += `<div class="msg ai">✨ <strong>Gemini Live 실시간 음성 대화</strong>가 연결되었습니다. 지금 바로 말씀하세요!</div>`;
           log.scrollTop = log.scrollHeight;
-          liveAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          cleanupGeminiLive();
+        } else if (msg.type === 'ready') {
+          log.innerHTML += `<div class="msg ai">✨ <strong>Gemini Live 실시간 음성 대화</strong> 연결됨 (${msg.model || 'Live'}) — 지금 바로 말씀하세요!</div>`;
+          log.scrollTop = log.scrollHeight;
+          const AudioCtx = window.AudioContext || window.webkitAudioContext;
+          try {
+            liveCaptureCtx = new AudioCtx({ sampleRate: 16000 });
+          } catch (_) {
+            liveCaptureCtx = new AudioCtx();
+          }
+          try {
+            livePlaybackCtx = new AudioCtx({ sampleRate: 24000 });
+          } catch (_) {
+            livePlaybackCtx = new AudioCtx();
+          }
           nextPlayTime = 0;
-          liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          const source = liveAudioCtx.createMediaStreamSource(liveStream);
-          const proc = liveAudioCtx.createScriptProcessor(4096, 1, 1);
-          proc.onaudioprocess = (e) => {
+          try {
+            liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          } catch (micErr) {
+            log.innerHTML += `<div class="msg ai">마이크 권한 오류: ${micErr.message || micErr}</div>`;
+            cleanupGeminiLive();
+            return;
+          }
+          liveSource = liveCaptureCtx.createMediaStreamSource(liveStream);
+          liveProc = liveCaptureCtx.createScriptProcessor(4096, 1, 1);
+          liveProc.onaudioprocess = (e) => {
             if (!liveActive || !liveWs || liveWs.readyState !== 1) return;
-            const b64 = pcm16ToBase64(e.inputBuffer.getChannelData(0));
+            const samples = downsampleTo16k(e.inputBuffer.getChannelData(0), liveCaptureCtx.sampleRate);
+            const b64 = pcm16ToBase64(samples);
             liveWs.send(JSON.stringify({ type: 'audio', data: b64 }));
           };
-          source.connect(proc);
-          proc.connect(liveAudioCtx.destination);
+          liveSource.connect(liveProc);
+          liveProc.connect(liveCaptureCtx.destination);
         } else if (msg.type === 'audio') {
           orb.classList.add('speaking');
           playPcm24k(msg.data);
+        } else if (msg.type === 'interrupted') {
+          stopPlaybackQueue();
+          orb.classList.remove('speaking');
+        } else if (msg.type === 'text' && msg.text) {
+          log.innerHTML += `<div class="msg ai">${msg.text}</div>`;
+          log.scrollTop = log.scrollHeight;
         } else if (msg.type === 'turn_complete') {
           orb.classList.remove('speaking');
         }
       };
+      liveWs.onerror = () => {
+        if (liveActive) {
+          log.innerHTML += `<div class="msg ai">Gemini Live WebSocket 연결이 끊어졌습니다.</div>`;
+          cleanupGeminiLive();
+        }
+      };
       liveWs.onclose = () => {
-        if (liveActive) toggleGeminiLive();
+        if (liveActive) cleanupGeminiLive();
       };
     }
 
