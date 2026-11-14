@@ -273,6 +273,21 @@
     </div>
 
     <div class="card">
+      <div class="card-title">OpenRouter 무료 LLM (저사양 자동전환)</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <select id="or-mode" style="background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:6px;font-size:0.8rem;">
+          <option value="auto">자동 (여유 RAM &lt; 2GB면 OpenRouter 무료)</option>
+          <option value="openrouter">항상 OpenRouter 무료 LLM</option>
+          <option value="local">항상 로컬 GGUF</option>
+        </select>
+        <input id="or-key" type="password" placeholder="OpenRouter API Key (sk-or-v1-...)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:0.8rem;" />
+        <input id="or-model" type="text" value="openrouter/free" placeholder="모델 (기본: openrouter/free)" style="font-size:0.8rem;padding:6px 8px;" />
+        <button onclick="saveOpenRouter()" style="padding:6px 10px;font-size:0.8rem;">설정 저장</button>
+        <div id="or-msg" class="sub"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Intelligence Per Watt (IPW)</div>
       <div class="metrics-grid">
         <div class="metric"><div class="val" id="m-queries">0</div><div class="lbl">Local Queries</div></div>
@@ -299,19 +314,25 @@
         <strong>나만의 온디바이스 AI (100% Local-First)</strong>
         <div class="sub" id="hdr-model">Initializing local engine...</div>
       </div>
-      <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-        <input type="checkbox" id="use-rag" checked /> Ripgrep Hybrid RAG 활성화
-      </label>
+      <div style="display:flex;gap:14px;align-items:center;">
+        <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="tts-toggle" checked /> 🔊 음성 응답 (TTS)
+        </label>
+        <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="use-rag" checked /> Ripgrep Hybrid RAG
+        </label>
+      </div>
     </header>
 
     <div class="chat-log" id="chat-log">
-      <div class="msg ai">안녕하세요! <strong>Stanford OpenJarvis</strong>의 5-Primitive 아키텍처와 <strong>happytalkman/ripgrep</strong> Rust 네이티브 검색 엔진을 결합한 <strong>Jarvis-RG</strong>입니다.
-로컬 파일/코드 검색부터 온디바이스 추론, 전력·비용 절감(Intelligence Per Watt) 추적까지 모두 내 기기에서 실행됩니다. 무엇을 도와드릴까요?</div>
+      <div class="msg ai">안녕하세요! <strong>Stanford OpenJarvis</strong>의 5-Primitive 아키텍처와 <strong>happytalkman/ripgrep</strong> Rust 네이티브 검색 엔진을 결합한 <strong>Jarvis-RG 음성 AI</strong>입니다.
+노트북 사양이 낮을 때는 왼쪽에서 <strong>OpenRouter 무료 API 키</strong>를 한 번만 저장하시면 자동으로 무료 LLM(<code>openrouter/free</code>)으로 전환됩니다!</div>
     </div>
 
     <div class="composer">
       <input id="glob-filter" class="glob-input" type="text" placeholder="Glob (예: *.py)" />
-      <input id="chat-input" type="text" placeholder="로컬 코드나 문서에 대해 질문하세요..." onkeydown="if(event.key==='Enter')sendChat()" />
+      <button id="mic-btn" onclick="toggleVoice()" style="background:#1e293b;color:#e5eefc;border:1px solid var(--border);">🎤 음성</button>
+      <input id="chat-input" type="text" placeholder="음성 또는 텍스트로 질문하세요 (예: 노트북 상태 알려줘)..." onkeydown="if(event.key==='Enter')sendChat()" />
       <button id="send-btn" onclick="sendChat()">전송</button>
     </div>
   </main>
