@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import Message, Role
 
-from weondevice.engine import InProcessLlamaCppEngine
+from weondevice.engine import HybridOnDeviceEngine
 from weondevice.integrations.weaidl6_bridge import WeAidL6Bridge
 from weondevice.telemetry import IPWMonitor, QueryTelemetry
 from weondevice.tools.laptop_tools import (
@@ -226,7 +226,7 @@ class WeOnDeviceAgent:
             trace_id=trace_id,
             query=query,
             model=gen.get("model", self.engine.model_path.name),
-            engine=self.engine.engine_id,
+            engine=gen.get("engine", "hybrid"),
             search_ms=float(retrieval["elapsed_ms"]),
             files_scanned=int(retrieval["files_scanned"]),
             matches_found=int(retrieval["total_matches"]),

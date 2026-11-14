@@ -69,15 +69,26 @@ def index() -> HTMLResponse:
     )
 
 
+from weondevice.engine import save_engine_config
+
+
+class OpenRouterConfigRequest(BaseModel):
+    openrouter_api_key: Optional[str] = None
+    openrouter_model: Optional[str] = None
+    mode: Optional[str] = None  # "auto" | "openrouter" | "local"
+
+
 @app.get("/api/health")
 def health() -> Dict[str, Any]:
     agent = get_agent()
     vm = psutil.virtual_memory()
+    engine_info = agent.engine.active_mode_info()
     return {
         "status": "ok",
         "rust_ripgrep_native": RUST_RG_AVAILABLE,
-        "model": agent.engine.model_path.name,
+        "model": engine_info["active_model"],
         "model_ready": agent.engine.health(),
+        "engine_info": engine_info,
         "voice": stt_status(),
         "weaidl6": agent.weaidl6.status(),
         "workspace_root": os.path.abspath(agent.workspace_root),
@@ -88,6 +99,12 @@ def health() -> Dict[str, Any]:
             "ram_available_gb": round(vm.available / (1024**3), 2),
         },
     }
+
+
+@app.post("/api/config/openrouter")
+def config_openrouter(req: OpenRouterConfigRequest) -> Dict[str, Any]:
+    save_engine_config(req.model_dump())
+    return {"ok": True, "engine_info": get_agent().engine.active_mode_info()}
 
 
 @app.post("/api/voice/transcribe")

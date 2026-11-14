@@ -322,17 +322,37 @@
         fetch('/api/health').then(r => r.json()),
         fetch('/api/telemetry').then(r => r.json())
       ]);
+      const ei = h.engine_info || {};
       document.getElementById('hdr-model').textContent =
-        `Model: ${h.model} | CPU: ${h.system.cpu_count} cores | RAM Free: ${h.system.ram_available_gb} GB`;
+        `Active: ${ei.active_engine || 'local'} (${h.model}) | CPU: ${h.system.cpu_count} cores | RAM Free: ${h.system.ram_available_gb} GB`;
       document.getElementById('status-badges').innerHTML = `
         <span class="badge">${h.rust_ripgrep_native ? 'Rust PyO3 RG: ON' : 'RG Subprocess'}</span>
-        <span class="badge">${h.model_ready ? 'GGUF Local Ready' : 'Model Missing'}</span>
-        <span class="badge">Cloud: $0.00</span>
+        <span class="badge">${ei.active_engine === 'openrouter_free' ? 'OpenRouter Free ($0)' : 'GGUF Local'}</span>
+        <span class="badge">${ei.low_ram_detected ? '저사양 자동모드' : '고성능 모드'}</span>
       `;
+      if (ei.mode) document.getElementById('or-mode').value = ei.mode;
+      if (ei.openrouter_model) document.getElementById('or-model').value = ei.openrouter_model;
       document.getElementById('m-queries').textContent = t.total_queries;
       document.getElementById('m-search').textContent = `${t.avg_search_ms} ms`;
       document.getElementById('m-tps').textContent = `${t.avg_tokens_per_sec} tok/s`;
       document.getElementById('m-saved').textContent = `$${t.total_cost_saved_usd.toFixed(5)}`;
+    }
+
+    async function saveOpenRouter() {
+      const payload = {
+        mode: document.getElementById('or-mode').value,
+        openrouter_model: document.getElementById('or-model').value.trim() || 'openrouter/free',
+      };
+      const key = document.getElementById('or-key').value.trim();
+      if (key) payload.openrouter_api_key = key;
+      const res = await fetch('/api/config/openrouter', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(payload)
+      }).then(r => r.json());
+      document.getElementById('or-msg').textContent =
+        `저장됨! 현재 엔진: ${res.engine_info.active_engine} (${res.engine_info.active_model})`;
+      refreshStatus();
     }
 
     async function runSearch() {
