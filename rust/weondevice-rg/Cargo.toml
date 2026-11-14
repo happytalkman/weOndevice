@@ -1,0 +1,19 @@
+[package]
+name = "weondevice_rg"
+version = "0.1.0"
+edition = "2021"
+description = "Native Python bindings to happytalkman/ripgrep crates for OpenJarvis on-device AI"
+
+[lib]
+name = "weondevice_rg"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.23", features = ["extension-module"] }
+grep-regex = { path = "../../third_party/ripgrep/crates/regex" }
+grep-searcher = { path = "../../third_party/ripgrep/crates/searcher" }
+grep-matcher = { path = "../../third_party/ripgrep/crates/matcher" }
+ignore = { path = "../../third_party/ripgrep/crates/ignore" }
+globset = { path = "../../third_party/ripgrep/crates/globset" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"

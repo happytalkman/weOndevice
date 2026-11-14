@@ -1,0 +1,138 @@
+"""FastAPI local-first server and Jarvis-RG HUD for weOndevice."""
+
+from __future__ import annotations
+
+import os
+import platform
+from dataclasses import asdict
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import psutil
+from fastapi import FastAPI, File, UploadFile
+from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
+
+from weondevice.agent import WeOnDeviceAgent
+from weondevice.tools.ripgrep_tool import (
+    RUST_RG_AVAILABLE,
+    run_ripgrep_files,
+    run_ripgrep_search,
+)
+from weondevice.voice import stt_status, transcribe_audio_bytes
+
+STATIC_DIR = Path(__file__).parent / "static"
+WORKSPACE_ROOT = os.environ.get("WEONDEVICE_ROOT", ".")
+
+app = FastAPI(title="weOndevice — Jarvis-RG On-Device Voice AI", version="0.2.0")
+_agent: Optional[WeOnDeviceAgent] = None
+
+
+def get_agent() -> WeOnDeviceAgent:
+    global _agent
+    if _agent is None:
+        _agent = WeOnDeviceAgent(workspace_root=WORKSPACE_ROOT)
+    return _agent
+
+
+class ChatRequest(BaseModel):
+    query: str
+    glob_pattern: Optional[str] = None
+    use_rag: bool = True
+    max_tokens: int = 384
+    temperature: float = 0.2
+
+
+class SearchRequest(BaseModel):
+    query: str
+    root: Optional[str] = None
+    glob_pattern: Optional[str] = None
+    max_results: int = 20
+    context_lines: int = 2
+    case_insensitive: bool = True
+
+
+class FeedbackRequest(BaseModel):
+    trace_id: str
+    feedback: str  # "up" or "down"
+
+
+@app.get("/", response_class=HTMLResponse)
+def index() -> HTMLResponse:
+    html_path = STATIC_DIR / "index.html"
+    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+
+
+@app.get("/api/health")
+def health() -> Dict[str, Any]:
+    agent = get_agent()
+    vm = psutil.virtual_memory()
+    return {
+        "status": "ok",
+        "rust_ripgrep_native": RUST_RG_AVAILABLE,
+        "model": agent.engine.model_path.name,
+        "model_ready": agent.engine.health(),
+        "voice": stt_status(),
+        "weaidl6": agent.weaidl6.status(),
+        "workspace_root": os.path.abspath(agent.workspace_root),
+        "system": {
+            "platform": platform.platform(),
+            "cpu_count": os.cpu_count(),
+            "ram_total_gb": round(vm.total / (1024**3), 2),
+            "ram_available_gb": round(vm.available / (1024**3), 2),
+        },
+    }
+
+
+@app.post("/api/voice/transcribe")
+async def voice_transcribe(file: UploadFile = File(...), language: str = "ko") -> Dict[str, Any]:
+    data = await file.read()
+    suffix = Path(file.filename or "audio.webm").suffix or ".webm"
+    return transcribe_audio_bytes(data, suffix=suffix, language=language)
+
+
+@app.post("/api/chat")
+def chat(req: ChatRequest) -> Dict[str, Any]:
+    agent = get_agent()
+    res = agent.ask(
+        req.query,
+        glob_pattern=req.glob_pattern,
+        use_rag=req.use_rag,
+        max_tokens=req.max_tokens,
+        temperature=req.temperature,
+    )
+    return {
+        "answer": res.answer,
+        "citations": res.citations,
+        "backend": res.backend,
+        "telemetry": asdict(res.telemetry),
+    }
+
+
+@app.post("/api/search")
+def search(req: SearchRequest) -> Dict[str, Any]:
+    return run_ripgrep_search(
+        query=req.query,
+        root=req.root or WORKSPACE_ROOT,
+        case_insensitive=req.case_insensitive,
+        max_results=req.max_results,
+        context_lines=req.context_lines,
+        glob_pattern=req.glob_pattern,
+    )
+
+
+@app.get("/api/files")
+def list_files(glob_pattern: Optional[str] = None, max_files: int = 100) -> Dict[str, Any]:
+    files = run_ripgrep_files(root=WORKSPACE_ROOT, glob_pattern=glob_pattern, max_files=max_files)
+    return {"count": len(files), "files": files}
+
+
+@app.get("/api/telemetry")
+def telemetry() -> Dict[str, Any]:
+    return get_agent().monitor.summary()
+
+
+@app.post("/api/feedback")
+def feedback(req: FeedbackRequest) -> Dict[str, Any]:
+    ok = get_agent().monitor.record_feedback(req.trace_id, req.feedback)
+    return {"updated": ok}

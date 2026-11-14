@@ -1,0 +1,187 @@
+"""WeOnDeviceAgent — Stanford OpenJarvis Primitives + happytalkman/ripgrep Hybrid Agent."""
+
+from __future__ import annotations
+
+import re
+import uuid
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+from openjarvis.core.registry import ToolRegistry
+from openjarvis.core.types import Message, Role
+
+from weondevice.engine import InProcessLlamaCppEngine
+from weondevice.integrations.weaidl6_bridge import WeAidL6Bridge
+from weondevice.telemetry import IPWMonitor, QueryTelemetry
+from weondevice.tools.laptop_tools import (
+    LocalFileReadTool,
+    QuickNoteTool,
+    SystemStatusTool,
+)
+from weondevice.tools.ripgrep_tool import (
+    HybridLocalRetriever,
+    RipgrepFilesTool,
+    RipgrepSearchTool,
+)
+
+
+SYSTEM_PROMPT = """\
+You are Jarvis-RG, a fast, privacy-first on-device personal voice AI assistant powered by Stanford OpenJarvis and happytalkman/ripgrep.
+Rules:
+1. Answer in the user's language (Korean if the user writes Korean, English if English).
+2. Ground your answer strictly in the provided [LOCAL EVIDENCE] or [TOOL OUTPUT] when available.
+3. Cite exact file paths and line numbers like `path/to/file:123` when referencing code or notes.
+4. Keep answers concise and natural for voice playback (TTS) when conversational.
+"""
+
+
+@dataclass
+class AgentTurnResult:
+    answer: str
+    citations: List[Dict[str, Any]]
+    telemetry: QueryTelemetry
+    backend: str
+    packed_context: str
+
+
+def _extract_search_keywords(query: str) -> List[str]:
+    """Extract high-signal search tokens (identifiers, paths, Korean/English keywords)."""
+    stopwords = {
+        "the", "and", "for", "with", "what", "how", "where", "when", "why", "this", "that",
+        "from", "into", "about", "find", "search", "show", "tell", "explain", "code", "file",
+        "있는", "어디", "무엇", "어떻게", "설명", "알려줘", "찾아줘", "검색", "코드", "파일",
+        "에서", "으로", "하고", "하는", "대한", "대해", "관련", "보여줘", "확인",
+    }
+    raw_tokens = re.findall(r"[A-Za-z0-9_./-]+|[가-힣]{2,}", query)
+    keywords = [t for t in raw_tokens if len(t) >= 2 and t.lower() not in stopwords]
+    return keywords[:6] if keywords else raw_tokens[:4]
+
+
+class WeOnDeviceAgent:
+    """Composable on-device agent uniting OpenJarvis primitives with ripgrep search & voice tools."""
+
+    def __init__(
+        self,
+        workspace_root: str = ".",
+        model_path: Optional[str] = None,
+        token_budget: int = 850,
+    ) -> None:
+        self.workspace_root = workspace_root
+        self.engine = InProcessLlamaCppEngine(model_path=model_path)
+        self.retriever = HybridLocalRetriever(root=workspace_root, token_budget=token_budget)
+        self.monitor = IPWMonitor()
+        self.weaidl6 = WeAidL6Bridge()
+
+        # Tools registered in OpenJarvis ToolRegistry
+        self.search_tool = RipgrepSearchTool(default_root=workspace_root)
+        self.files_tool = RipgrepFilesTool(default_root=workspace_root)
+        self.system_tool = SystemStatusTool()
+        self.file_read_tool = LocalFileReadTool(workspace_root=workspace_root)
+        self.note_tool = QuickNoteTool()
+
+    def _route_laptop_tools(self, query: str) -> tuple[str, List[str]]:
+        """Deterministic natural-language intent routing for fast, reliable on-device tool use."""
+        q_low = query.lower()
+        outputs: List[str] = []
+        used: List[str] = []
+
+        if any(k in q_low for k in ("배터리", "메모리", "ram", "cpu", "디스크", "시스템 상태", "노트북 상태", "battery", "system status")):
+            res = self.system_tool.execute()
+            outputs.append(f"[system_status]\n{res.content}")
+            used.append("system_status")
+
+        if any(k in q_low for k in ("메모 적어", "메모 저장", "노트 저장", "기억해", "save note", "add note")):
+            cleaned = re.sub(r"^(메모\s*적어줘|메모\s*저장해줘|기억해줘|메모\s*적어|save note|add note)[:\s]*", "", query.strip(), flags=re.I)
+            res = self.note_tool.execute(action="add", text=cleaned or query)
+            outputs.append(f"[quick_note]\n{res.content}")
+            used.append("quick_note")
+        elif any(k in q_low for k in ("메모 보여", "메모 목록", "노트 보여", "저장된 메모", "list notes", "show notes")):
+            res = self.note_tool.execute(action="list")
+            outputs.append(f"[quick_note]\n{res.content}")
+            used.append("quick_note")
+
+        return "\n\n".join(outputs), used
+
+    def ask(
+        self,
+        query: str,
+        *,
+        glob_pattern: Optional[str] = None,
+        use_rag: bool = True,
+        max_tokens: int = 384,
+        temperature: float = 0.2,
+    ) -> AgentTurnResult:
+        trace_id = uuid.uuid4().hex[:12]
+        span = self.monitor.start_span()
+
+        tool_output, tools_used = self._route_laptop_tools(query)
+
+        retrieval: Dict[str, Any] = {
+            "backend": "none",
+            "elapsed_ms": 0.0,
+            "files_scanned": 0,
+            "total_matches": 0,
+            "packed_context": "",
+            "citations": [],
+            "context_tokens_est": 0,
+        }
+
+        if use_rag and not tools_used:
+            keywords = _extract_search_keywords(query)
+            retrieval = self.retriever.retrieve(
+                query,
+                keywords=keywords,
+                glob_pattern=glob_pattern,
+                top_k=5,
+            )
+            tools_used.append("ripgrep_search")
+
+        sections: List[str] = []
+        if tool_output:
+            sections.append(f"[TOOL OUTPUT]\n{tool_output}")
+        packed_context = retrieval["packed_context"]
+        if packed_context:
+            sections.append(
+                f"[LOCAL EVIDENCE (ripgrep {retrieval['elapsed_ms']:.1f}ms, "
+                f"{retrieval['files_scanned']} files scanned)]\n{packed_context}"
+            )
+        sections.append(f"[USER QUESTION]\n{query}")
+        user_content = "\n\n".join(sections)
+
+        messages = [
+            Message(role=Role.SYSTEM, content=SYSTEM_PROMPT),
+            Message(role=Role.USER, content=user_content),
+        ]
+
+        gen = self.engine.generate(
+            messages,
+            model=self.engine.model_path.name,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        usage = gen.get("usage", {})
+        prompt_tokens = int(usage.get("prompt_tokens", max(1, len(user_content) // 4)))
+        completion_tokens = int(usage.get("completion_tokens", max(1, len(gen["content"]) // 4)))
+
+        telemetry = self.monitor.finish_span(
+            span,
+            trace_id=trace_id,
+            query=query,
+            model=gen.get("model", self.engine.model_path.name),
+            engine=self.engine.engine_id,
+            search_ms=float(retrieval["elapsed_ms"]),
+            files_scanned=int(retrieval["files_scanned"]),
+            matches_found=int(retrieval["total_matches"]),
+            context_tokens_est=int(retrieval["context_tokens_est"]),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            tools_used=tools_used,
+        )
+
+        return AgentTurnResult(
+            answer=gen["content"].strip(),
+            citations=retrieval["citations"],
+            telemetry=telemetry,
+            backend=retrieval["backend"],
+            packed_context=packed_context,
+        )
