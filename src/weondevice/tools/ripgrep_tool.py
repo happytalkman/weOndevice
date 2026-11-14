@@ -85,9 +85,16 @@ def run_ripgrep_search(
         cmd.extend(["-g", glob_pattern])
     cmd.extend([query, root])
 
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
     matches: List[Dict[str, Any]] = []
-    for line in proc.stdout.splitlines():
+    for line in (proc.stdout or "").splitlines():
         try:
             ev = json.loads(line)
         except json.JSONDecodeError:
@@ -140,9 +147,16 @@ def run_ripgrep_files(
     if glob_pattern:
         cmd.extend(["-g", glob_pattern])
     cmd.append(root)
-    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+    proc = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=15,
+    )
     files = []
-    for line in proc.stdout.splitlines()[:max_files]:
+    for line in (proc.stdout or "").splitlines()[:max_files]:
         p = Path(line)
         files.append({"path": line, "size_bytes": p.stat().st_size if p.exists() else 0})
     return files

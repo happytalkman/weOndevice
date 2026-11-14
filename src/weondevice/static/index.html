@@ -428,6 +428,18 @@
       uDiv.textContent = q;
       log.appendChild(uDiv);
       input.value = '';
+      log.scrollTop = log.scrollHeight;
+
+      if (liveActive && liveWs && liveWs.readyState === 1) {
+        liveWs.send(JSON.stringify({
+          clientContent: {
+            turns: [{ role: 'user', parts: [{ text: q }] }],
+            turnComplete: true
+          }
+        }));
+        return;
+      }
+
       btn.disabled = true;
 
       const aDiv = document.createElement('div');
