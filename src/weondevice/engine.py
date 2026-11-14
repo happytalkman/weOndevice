@@ -188,7 +188,7 @@ class OpenRouterFreeEngine(InferenceEngine):
             "model": target_model,
             "messages": messages_to_dicts(messages),
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max(max_tokens, 1024),
         }
         headers = {
             "Authorization": f"Bearer {api_key}",
@@ -206,9 +206,12 @@ class OpenRouterFreeEngine(InferenceEngine):
             data = resp.json()
 
         choice = data["choices"][0]["message"]
+        content = (choice.get("content") or "").strip()
+        if not content:
+            content = (choice.get("reasoning") or choice.get("reasoning_content") or "").strip()
         usage = data.get("usage", {})
         return {
-            "content": choice.get("content") or "",
+            "content": content,
             "usage": {
                 "prompt_tokens": usage.get("prompt_tokens", 0),
                 "completion_tokens": usage.get("completion_tokens", 0),

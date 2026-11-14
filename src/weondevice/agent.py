@@ -210,7 +210,9 @@ class WeOnDeviceAgent:
                 temperature=temperature,
                 max_tokens=max_tokens,
             )
-            answer_text = gen["content"].strip()
+            answer_text = (gen.get("content") or "").strip()
+            if not answer_text:
+                answer_text = tool_output or packed_context or "응답을 생성하지 못했습니다. 다시 시도해 주세요."
             usage = gen.get("usage", {})
         except Exception as exc:
             fallback_body = tool_output or packed_context or "로컬 검색 결과가 없습니다."
