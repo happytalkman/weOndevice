@@ -1,5 +1,8 @@
 """Tests for weOndevice (happytalkman/ripgrep + OpenJarvis integration)."""
 
+from weondevice.agent import _resolve_search_root
+from weondevice.integrations.weaidl6_bridge import WeAidL6InspectTool
+from weondevice.tools.laptop_tools import QuickNoteTool, SystemStatusTool
 from weondevice.tools.ripgrep_tool import (
     HybridLocalRetriever,
     RipgrepFilesTool,
@@ -32,3 +35,22 @@ def test_hybrid_retriever_token_budget():
     assert res["total_matches"] >= 1
     assert res["context_tokens_est"] <= 300
     assert len(res["citations"]) >= 1
+
+
+def test_laptop_tools_and_weaidl6_bridge(tmp_path):
+    sys_res = SystemStatusTool().execute()
+    assert sys_res.success
+    assert "cpu_cores" in sys_res.content
+
+    note_tool = QuickNoteTool(notes_file=tmp_path / "notes.md")
+    add_res = note_tool.execute(action="add", text="테스트 메모")
+    assert add_res.success
+    list_res = note_tool.execute(action="list")
+    assert "테스트 메모" in list_res.content
+
+    w_res = WeAidL6InspectTool().execute()
+    assert isinstance(w_res.content, str)
+
+    # Korean particle stripping fallback
+    root = _resolve_search_root("c:\\Users에서 pdf 파일 찾아줘", ".")
+    assert "에서" not in root

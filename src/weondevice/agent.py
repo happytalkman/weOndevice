@@ -11,7 +11,7 @@ from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import Message, Role
 
 from weondevice.engine import HybridOnDeviceEngine
-from weondevice.integrations.weaidl6_bridge import WeAidL6Bridge
+from weondevice.integrations.weaidl6_bridge import WeAidL6Bridge, WeAidL6InspectTool
 from weondevice.telemetry import IPWMonitor, QueryTelemetry
 from weondevice.tools.laptop_tools import (
     LocalFileReadTool,
@@ -23,6 +23,13 @@ from weondevice.tools.ripgrep_tool import (
     RipgrepFilesTool,
     RipgrepSearchTool,
 )
+
+# Register OpenJarvis built-in tools when available
+try:
+    import openjarvis.tools.calculator  # noqa: F401
+    import openjarvis.tools.think  # noqa: F401
+except Exception:
+    pass
 
 
 SYSTEM_PROMPT = """\
@@ -49,12 +56,41 @@ def _extract_search_keywords(query: str) -> List[str]:
     stopwords = {
         "the", "and", "for", "with", "what", "how", "where", "when", "why", "this", "that",
         "from", "into", "about", "find", "search", "show", "tell", "explain", "code", "file",
-        "있는", "어디", "무엇", "어떻게", "설명", "알려줘", "찾아줘", "검색", "코드", "파일",
+        "있는", "어디", "무엇", "어떻게", "설명", "알려줘", "찾아줘", "찾아저", "검색", "코드", "파일",
         "에서", "으로", "하고", "하는", "대한", "대해", "관련", "보여줘", "확인",
     }
     raw_tokens = re.findall(r"[A-Za-z0-9_./-]+|[가-힣]{2,}", query)
     keywords = [t for t in raw_tokens if len(t) >= 2 and t.lower() not in stopwords]
     return keywords[:6] if keywords else raw_tokens[:4]
+
+
+def _resolve_search_root(query: str, default_root: str) -> str:
+    """Extract Windows/Linux path from query (stripping Korean particles like '에서') or use home."""
+    from pathlib import Path
+
+    q_low = query.lower()
+    if "바탕화면" in q_low or "desktop" in q_low:
+        p = Path.home() / "Desktop"
+        if p.exists():
+            return str(p)
+    if "다운로드" in q_low or "downloads" in q_low:
+        p = Path.home() / "Downloads"
+        if p.exists():
+            return str(p)
+    if "내 문서" in q_low or "문서폴더" in q_low:
+        p = Path.home() / "Documents"
+        if p.exists():
+            return str(p)
+
+    drive_match = re.search(r"([a-zA-Z]:\\(?:[A-Za-z0-9_.\-\\/ ]+)?)", query)
+    if drive_match:
+        raw = drive_match.group(1).strip()
+        raw = re.sub(r"(에서|에|의|안의|폴더)$", "", raw).strip()
+        if Path(raw).exists():
+            return raw
+
+    home = Path.home()
+    return str(home) if home.exists() else default_root
 
 
 class WeOnDeviceAgent:
@@ -78,12 +114,21 @@ class WeOnDeviceAgent:
         self.system_tool = SystemStatusTool()
         self.file_read_tool = LocalFileReadTool(workspace_root=workspace_root)
         self.note_tool = QuickNoteTool()
+        self.weaidl6_tool = WeAidL6InspectTool()
 
     def _route_laptop_tools(self, query: str) -> tuple[str, List[str]]:
         """Deterministic natural-language intent routing for fast, reliable on-device tool use."""
+        import os
+        from pathlib import Path
+
         q_low = query.lower()
         outputs: List[str] = []
         used: List[str] = []
+
+        if "weaidl6" in q_low:
+            res = self.weaidl6_tool.execute()
+            outputs.append(f"[weaidl6_inspect]\n{res.content}")
+            used.append("weaidl6_inspect")
 
         if any(k in q_low for k in ("배터리", "메모리", "ram", "cpu", "디스크", "시스템 상태", "노트북 상태", "battery", "system status")):
             res = self.system_tool.execute()
@@ -102,16 +147,13 @@ class WeOnDeviceAgent:
 
         ext_match = re.search(r"\b(ppt|pptx|pdf|docx?|xlsx?|hwp|csv|txt|md|py|rs)\b", q_low)
         is_file_query = any(k in q_low for k in ("찾아", "검색", "어디", "목록", "문서", "파일", "find", "list", "search"))
-        if ext_match and is_file_query:
-            import os
-            from pathlib import Path
+        skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
 
+        if ext_match and is_file_query:
             ext = ext_match.group(1)
             exts = (".ppt", ".pptx") if ext in ("ppt", "pptx") else (f".{ext}",)
-            drive_match = re.search(r"([a-zA-Z]:\\[^\s]*)", query)
-            search_root = drive_match.group(1) if drive_match else str(Path.home())
+            search_root = _resolve_search_root(query, self.workspace_root)
             found: List[str] = []
-            skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
             for dirpath, dirnames, filenames in os.walk(search_root, onerror=lambda _: None):
                 dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
                 for fn in filenames:
@@ -123,18 +165,14 @@ class WeOnDeviceAgent:
                     break
             outputs.append(
                 f"[file_finder ({search_root}, {exts})]\n"
-                + ("\n".join(found) if found else f"No matching {exts} files found.")
+                + ("\n".join(found) if found else f"No matching {exts} files found in {search_root}.")
             )
             used.append("file_finder")
-        elif is_file_query and any(k in q_low for k in ("문서", "파일")):
-            import os
-            from pathlib import Path
-
+        elif is_file_query and any(k in q_low for k in ("문서", "파일", "찾아줘", "찾아저")):
             kw = [t for t in _extract_search_keywords(query) if t not in ("문서", "파일")]
             if kw:
-                search_root = str(Path.home())
+                search_root = _resolve_search_root(query, self.workspace_root)
                 found = []
-                skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
                 for dirpath, dirnames, filenames in os.walk(search_root, onerror=lambda _: None):
                     dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
                     for fn in filenames:
@@ -146,7 +184,7 @@ class WeOnDeviceAgent:
                         break
                 outputs.append(
                     f"[file_finder ({search_root}, keywords={kw})]\n"
-                    + ("\n".join(found) if found else f"'{', '.join(kw)}' 관련 파일을 찾지 못했습니다.")
+                    + ("\n".join(found) if found else f"'{', '.join(kw)}' 관련 파일을 {search_root}에서 찾지 못했습니다.")
                 )
                 used.append("file_finder")
 
