@@ -100,6 +100,32 @@ class WeOnDeviceAgent:
             outputs.append(f"[quick_note]\n{res.content}")
             used.append("quick_note")
 
+        ext_match = re.search(r"\b(ppt|pptx|pdf|docx?|xlsx?|csv|txt|md|py|rs)\b", q_low)
+        if ext_match and any(k in q_low for k in ("찾아", "검색", "어디", "목록", "find", "list", "search")):
+            import os
+            from pathlib import Path
+
+            ext = ext_match.group(1)
+            exts = (".ppt", ".pptx") if ext in ("ppt", "pptx") else (f".{ext}",)
+            drive_match = re.search(r"([a-zA-Z]:\\[^\s]*)", query)
+            search_root = drive_match.group(1) if drive_match else self.workspace_root
+            found: List[str] = []
+            skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
+            for dirpath, dirnames, filenames in os.walk(search_root, onerror=lambda _: None):
+                dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+                for fn in filenames:
+                    if fn.lower().endswith(exts):
+                        found.append(str(Path(dirpath) / fn))
+                        if len(found) >= 30:
+                            break
+                if len(found) >= 30:
+                    break
+            outputs.append(
+                f"[file_finder ({search_root}, {exts})]\n"
+                + ("\n".join(found) if found else f"No matching {exts} files found.")
+            )
+            used.append("file_finder")
+
         return "\n\n".join(outputs), used
 
     def ask(

@@ -57,10 +57,16 @@ class FeedbackRequest(BaseModel):
     feedback: str  # "up" or "down"
 
 
+from fastapi.responses import HTMLResponse, JSONResponse
+
+
 @app.get("/", response_class=HTMLResponse)
 def index() -> HTMLResponse:
     html_path = STATIC_DIR / "index.html"
-    return HTMLResponse(html_path.read_text(encoding="utf-8"))
+    return HTMLResponse(
+        html_path.read_text(encoding="utf-8"),
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/api/health")
@@ -92,21 +98,24 @@ async def voice_transcribe(file: UploadFile = File(...), language: str = "ko") -
 
 
 @app.post("/api/chat")
-def chat(req: ChatRequest) -> Dict[str, Any]:
-    agent = get_agent()
-    res = agent.ask(
-        req.query,
-        glob_pattern=req.glob_pattern,
-        use_rag=req.use_rag,
-        max_tokens=req.max_tokens,
-        temperature=req.temperature,
-    )
-    return {
-        "answer": res.answer,
-        "citations": res.citations,
-        "backend": res.backend,
-        "telemetry": asdict(res.telemetry),
-    }
+def chat(req: ChatRequest) -> Any:
+    try:
+        agent = get_agent()
+        res = agent.ask(
+            req.query,
+            glob_pattern=req.glob_pattern,
+            use_rag=req.use_rag,
+            max_tokens=req.max_tokens,
+            temperature=req.temperature,
+        )
+        return {
+            "answer": res.answer,
+            "citations": res.citations,
+            "backend": res.backend,
+            "telemetry": asdict(res.telemetry),
+        }
+    except Exception as exc:
+        return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
 @app.post("/api/search")

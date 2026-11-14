@@ -168,7 +168,9 @@ class HybridLocalRetriever:
             terms = [query]
 
         # Build regex OR pattern from extracted keywords for fast single-pass ripgrep scan
-        escaped = [t.replace("\\", "\\\\").replace("|", "\\|") for t in terms[:6]]
+        import re as _re
+
+        escaped = [_re.escape(t) for t in terms[:6]]
         pattern = "|".join(escaped)
 
         report = run_ripgrep_search(
