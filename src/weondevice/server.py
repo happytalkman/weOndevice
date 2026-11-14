@@ -163,16 +163,21 @@ def ppt_generate(req: PPTGenerateRequest) -> Dict[str, Any]:
 
 @app.get("/api/ppt/download/{filename}")
 def ppt_download(filename: str) -> Any:
+    from urllib.parse import quote
     from fastapi.responses import FileResponse
 
     safe_name = Path(filename).name
     target = get_agent().ppt_tool.bridge.exports_dir / safe_name
     if not target.exists():
         return JSONResponse(status_code=404, content={"error": "파일을 찾을 수 없습니다."})
+    encoded = quote(safe_name)
     return FileResponse(
         path=str(target),
-        filename=safe_name,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        headers={
+            "Content-Disposition": f"attachment; filename=\"presentation.pptx\"; filename*=UTF-8''{encoded}",
+            "Cache-Control": "no-store",
+        },
     )
 
 
