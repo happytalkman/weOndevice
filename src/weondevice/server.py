@@ -9,11 +9,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import psutil
-from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, File, UploadFile, WebSocket
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from weondevice.agent import WeOnDeviceAgent
+from weondevice.engine import save_engine_config
+from weondevice.gemini_live import relay_gemini_live
 from weondevice.tools.ripgrep_tool import (
     RUST_RG_AVAILABLE,
     run_ripgrep_files,
@@ -24,7 +26,7 @@ from weondevice.voice import stt_status, transcribe_audio_bytes
 STATIC_DIR = Path(__file__).parent / "static"
 WORKSPACE_ROOT = os.environ.get("WEONDEVICE_ROOT", ".")
 
-app = FastAPI(title="weOndevice — Jarvis-RG On-Device Voice AI", version="0.2.0")
+app = FastAPI(title="weOndevice — Jarvis-RG On-Device Voice AI", version="0.3.0")
 _agent: Optional[WeOnDeviceAgent] = None
 
 
@@ -57,7 +59,15 @@ class FeedbackRequest(BaseModel):
     feedback: str  # "up" or "down"
 
 
-from fastapi.responses import HTMLResponse, JSONResponse
+class OpenRouterConfigRequest(BaseModel):
+    openrouter_api_key: Optional[str] = None
+    openrouter_model: Optional[str] = None
+    mode: Optional[str] = None  # "auto" | "openrouter" | "local"
+
+
+class GeminiConfigRequest(BaseModel):
+    gemini_api_key: Optional[str] = None
+    gemini_live_model: Optional[str] = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -67,15 +77,6 @@ def index() -> HTMLResponse:
         html_path.read_text(encoding="utf-8"),
         headers={"Cache-Control": "no-store"},
     )
-
-
-from weondevice.engine import save_engine_config
-
-
-class OpenRouterConfigRequest(BaseModel):
-    openrouter_api_key: Optional[str] = None
-    openrouter_model: Optional[str] = None
-    mode: Optional[str] = None  # "auto" | "openrouter" | "local"
 
 
 @app.get("/api/health")
@@ -105,6 +106,17 @@ def health() -> Dict[str, Any]:
 def config_openrouter(req: OpenRouterConfigRequest) -> Dict[str, Any]:
     save_engine_config(req.model_dump())
     return {"ok": True, "engine_info": get_agent().engine.active_mode_info()}
+
+
+@app.post("/api/config/gemini")
+def config_gemini(req: GeminiConfigRequest) -> Dict[str, Any]:
+    save_engine_config(req.model_dump())
+    return {"ok": True}
+
+
+@app.websocket("/ws/gemini-live")
+async def ws_gemini_live(websocket: WebSocket) -> None:
+    await relay_gemini_live(websocket, get_agent())
 
 
 @app.post("/api/voice/transcribe")

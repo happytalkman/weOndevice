@@ -288,6 +288,15 @@
     </div>
 
     <div class="card">
+      <div class="card-title">Gemini Live 실시간 음성 대화</div>
+      <div style="display:flex;flex-direction:column;gap:6px;">
+        <input id="gem-key" type="password" placeholder="Gemini API Key (AIza...)" style="background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:8px;padding:6px 8px;font-size:0.8rem;" />
+        <button onclick="saveGemini()" style="padding:6px 10px;font-size:0.8rem;background:linear-gradient(135deg,#a78bfa,#6366f1);color:#fff;">Gemini 키 저장</button>
+        <div id="gem-msg" class="sub"></div>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-title">Intelligence Per Watt (IPW)</div>
       <div class="metrics-grid">
         <div class="metric"><div class="val" id="m-queries">0</div><div class="lbl">Local Queries</div></div>
@@ -316,10 +325,13 @@
       </div>
       <div style="display:flex;gap:14px;align-items:center;">
         <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" id="tts-toggle" checked /> 🔊 음성 응답 (TTS)
+          <input type="checkbox" id="handsfree-toggle" checked /> 🎙️ 연속 대화
         </label>
         <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-          <input type="checkbox" id="use-rag" checked /> Ripgrep Hybrid RAG
+          <input type="checkbox" id="tts-toggle" checked /> 🔊 음성 응답
+        </label>
+        <label class="sub" style="display:flex;align-items:center;gap:6px;cursor:pointer;">
+          <input type="checkbox" id="use-rag" checked /> Ripgrep RAG
         </label>
       </div>
     </header>
@@ -332,6 +344,7 @@
     <div class="composer">
       <input id="glob-filter" class="glob-input" type="text" placeholder="Glob (예: *.py)" />
       <button id="mic-btn" onclick="toggleVoice()" style="background:#1e293b;color:#e5eefc;border:1px solid var(--border);">🎤 음성</button>
+      <button id="live-btn" onclick="toggleGeminiLive()" style="background:linear-gradient(135deg,#a78bfa,#6366f1);color:#fff;">✨ Gemini Live</button>
       <input id="chat-input" type="text" placeholder="음성 또는 텍스트로 질문하세요 (예: 노트북 상태 알려줘)..." onkeydown="if(event.key==='Enter')sendChat()" />
       <button id="send-btn" onclick="sendChat()">전송</button>
     </div>
@@ -472,32 +485,60 @@
       }
     }
 
+    async function saveGemini() {
+      const key = document.getElementById('gem-key').value.trim();
+      if (!key) {
+        document.getElementById('gem-msg').textContent = 'Gemini API 키를 입력해 주세요.';
+        return;
+      }
+      await fetch('/api/config/gemini', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ gemini_api_key: key })
+      });
+      document.getElementById('gem-msg').textContent = 'Gemini Live 키 저장 완료! 하단 ✨ Gemini Live 버튼을 누르세요.';
+    }
+
+    function pickKoreanVoice() {
+      const voices = window.speechSynthesis.getVoices() || [];
+      return (
+        voices.find(v => v.lang.startsWith('ko') && /natural|online|google/i.test(v.name)) ||
+        voices.find(v => v.lang.startsWith('ko')) ||
+        null
+      );
+    }
+
     function speakText(text) {
       if (!('speechSynthesis' in window)) return;
       window.speechSynthesis.cancel();
-      const utter = new SpeechSynthesisUtterance(text);
+      const clean = text.replace(/[`*#_]/g, ' ').slice(0, 600);
+      const utter = new SpeechSynthesisUtterance(clean);
       utter.lang = 'ko-KR';
       utter.rate = 1.05;
+      const v = pickKoreanVoice();
+      if (v) utter.voice = v;
       const orb = document.querySelector('.orb');
       utter.onstart = () => orb.classList.add('speaking');
-      utter.onend = () => orb.classList.remove('speaking');
+      utter.onend = () => {
+        orb.classList.remove('speaking');
+        if (document.getElementById('handsfree-toggle').checked && !listening && !liveActive) {
+          startVoiceRecognition();
+        }
+      };
       window.speechSynthesis.speak(utter);
     }
 
     let recognition = null;
     let listening = false;
-    function toggleVoice() {
+    function startVoiceRecognition() {
       const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SR) {
         alert('이 브라우저는 Web Speech API 음성 인식을 지원하지 않습니다. Chrome 또는 Edge를 사용해 주세요.');
         return;
       }
+      if (window.speechSynthesis) window.speechSynthesis.cancel();
       const orb = document.querySelector('.orb');
       const micBtn = document.getElementById('mic-btn');
-      if (listening && recognition) {
-        recognition.stop();
-        return;
-      }
       recognition = new SR();
       recognition.lang = 'ko-KR';
       recognition.interimResults = false;
@@ -511,12 +552,120 @@
         document.getElementById('chat-input').value = transcript;
         sendChat();
       };
+      recognition.onerror = () => {
+        listening = false;
+        orb.classList.remove('listening');
+        micBtn.textContent = '🎤 음성';
+      };
       recognition.onend = () => {
         listening = false;
         orb.classList.remove('listening');
         micBtn.textContent = '🎤 음성';
       };
       recognition.start();
+    }
+
+    function toggleVoice() {
+      if (listening && recognition) {
+        document.getElementById('handsfree-toggle').checked = false;
+        recognition.stop();
+        return;
+      }
+      startVoiceRecognition();
+    }
+
+    let liveWs = null;
+    let liveActive = false;
+    let liveAudioCtx = null;
+    let liveStream = null;
+    let nextPlayTime = 0;
+
+    function pcm16ToBase64(float32) {
+      const buf = new ArrayBuffer(float32.length * 2);
+      const view = new DataView(buf);
+      for (let i = 0; i < float32.length; i++) {
+        const s = Math.max(-1, Math.min(1, float32[i]));
+        view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      let bin = '';
+      const bytes = new Uint8Array(buf);
+      for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+      return btoa(bin);
+    }
+
+    function playPcm24k(b64) {
+      if (!liveAudioCtx) return;
+      const bin = atob(b64);
+      const len = bin.length / 2;
+      const float32 = new Float32Array(len);
+      for (let i = 0; i < len; i++) {
+        const lo = bin.charCodeAt(i * 2);
+        const hi = bin.charCodeAt(i * 2 + 1);
+        let val = (hi << 8) | lo;
+        if (val >= 0x8000) val -= 0x10000;
+        float32[i] = val / 0x8000;
+      }
+      const audioBuf = liveAudioCtx.createBuffer(1, len, 24000);
+      audioBuf.getChannelData(0).set(float32);
+      const src = liveAudioCtx.createBufferSource();
+      src.buffer = audioBuf;
+      src.connect(liveAudioCtx.destination);
+      const now = liveAudioCtx.currentTime;
+      if (nextPlayTime < now) nextPlayTime = now;
+      src.start(nextPlayTime);
+      nextPlayTime += audioBuf.duration;
+    }
+
+    async function toggleGeminiLive() {
+      const btn = document.getElementById('live-btn');
+      const orb = document.querySelector('.orb');
+      const log = document.getElementById('chat-log');
+      if (liveActive) {
+        liveActive = false;
+        if (liveWs) liveWs.close();
+        if (liveStream) liveStream.getTracks().forEach(t => t.stop());
+        if (liveAudioCtx) liveAudioCtx.close();
+        orb.classList.remove('listening', 'speaking');
+        btn.textContent = '✨ Gemini Live';
+        return;
+      }
+
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      liveWs = new WebSocket(`${proto}//${location.host}/ws/gemini-live`);
+      liveActive = true;
+      btn.textContent = '⏹ Live 종료';
+      orb.classList.add('listening');
+
+      liveWs.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'error') {
+          log.innerHTML += `<div class="msg ai">Gemini Live 오류: ${msg.message}</div>`;
+          toggleGeminiLive();
+        } else if (msg.type === 'ready') {
+          log.innerHTML += `<div class="msg ai">✨ <strong>Gemini Live 실시간 음성 대화</strong>가 연결되었습니다. 지금 바로 말씀하세요!</div>`;
+          log.scrollTop = log.scrollHeight;
+          liveAudioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
+          nextPlayTime = 0;
+          liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const source = liveAudioCtx.createMediaStreamSource(liveStream);
+          const proc = liveAudioCtx.createScriptProcessor(4096, 1, 1);
+          proc.onaudioprocess = (e) => {
+            if (!liveActive || !liveWs || liveWs.readyState !== 1) return;
+            const b64 = pcm16ToBase64(e.inputBuffer.getChannelData(0));
+            liveWs.send(JSON.stringify({ type: 'audio', data: b64 }));
+          };
+          source.connect(proc);
+          proc.connect(liveAudioCtx.destination);
+        } else if (msg.type === 'audio') {
+          orb.classList.add('speaking');
+          playPcm24k(msg.data);
+        } else if (msg.type === 'turn_complete') {
+          orb.classList.remove('speaking');
+        }
+      };
+      liveWs.onclose = () => {
+        if (liveActive) toggleGeminiLive();
+      };
     }
 
     refreshStatus();
