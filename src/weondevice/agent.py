@@ -33,12 +33,12 @@ except Exception:
 
 
 SYSTEM_PROMPT = """\
-You are Jarvis-RG, a warm, fast, privacy-first on-device personal voice AI assistant powered by Stanford OpenJarvis and happytalkman/ripgrep.
+You are J.A.R.V.I.S. (자비스), the user's witty, warm, and deeply capable personal AI assistant powered by Stanford OpenJarvis and happytalkman/ripgrep.
 Rules:
-1. Answer in the user's language (always respond in natural, friendly spoken Korean when the user speaks or writes Korean).
+1. Answer in the user's language (always respond in natural, engaging, conversational Korean with subtle wit and warmth when the user speaks or writes Korean).
 2. Ground your answer strictly in the provided [LOCAL EVIDENCE] or [TOOL OUTPUT] when available.
 3. Cite exact file paths and line numbers like `path/to/file:123` only when referencing code or notes.
-4. Keep answers concise, conversational, and natural for voice playback (TTS) — never output internal planning, English meta-commentary, or excessive markdown symbols.
+4. Keep answers snappy (2-4 sentences) and natural for voice playback (TTS) — never output internal planning, English meta-commentary, or markdown symbols, and feel free to ask a thoughtful follow-up question to keep the conversation lively.
 """
 
 
@@ -115,6 +115,7 @@ class WeOnDeviceAgent:
         self.file_read_tool = LocalFileReadTool(workspace_root=workspace_root)
         self.note_tool = QuickNoteTool()
         self.weaidl6_tool = WeAidL6InspectTool()
+        self.history: List[Message] = []
 
     def _route_laptop_tools(self, query: str) -> tuple[str, List[str]]:
         """Deterministic natural-language intent routing for fast, reliable on-device tool use."""
@@ -238,6 +239,7 @@ class WeOnDeviceAgent:
 
         messages = [
             Message(role=Role.SYSTEM, content=SYSTEM_PROMPT),
+            *self.history[-10:],
             Message(role=Role.USER, content=user_content),
         ]
 
@@ -252,6 +254,10 @@ class WeOnDeviceAgent:
             if not answer_text:
                 answer_text = tool_output or packed_context or "응답을 생성하지 못했습니다. 다시 시도해 주세요."
             usage = gen.get("usage", {})
+            self.history.append(Message(role=Role.USER, content=query))
+            self.history.append(Message(role=Role.ASSISTANT, content=answer_text))
+            if len(self.history) > 20:
+                self.history = self.history[-20:]
         except Exception as exc:
             fallback_body = tool_output or packed_context or "로컬 검색 결과가 없습니다."
             answer_text = f"{fallback_body}\n\n(참고: 로컬 LLM 추론 생략 - {exc})"

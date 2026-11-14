@@ -108,16 +108,19 @@ def _build_setup_msg(model: str, include_tools: bool = True) -> Dict[str, Any]:
         "generationConfig": {
             "responseModalities": ["AUDIO"],
             "speechConfig": {
-                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Aoede"}}
+                "voiceConfig": {"prebuiltVoiceConfig": {"voiceName": "Charon"}}
             },
         },
+        "inputAudioTranscription": {},
+        "outputAudioTranscription": {},
         "systemInstruction": {
             "parts": [
                 {
                     "text": (
-                        "You are Jarvis-RG, a warm, natural Korean on-device personal voice assistant. "
-                        "Always respond concisely in natural spoken Korean. "
-                        "Use your local tools (file_finder, ripgrep_search, system_status) whenever the user asks about local files, code, or laptop status."
+                        "You are J.A.R.V.I.S. (자비스), the user's witty, warm, and deeply capable personal AI assistant on their Windows laptop. "
+                        "Speak in natural, engaging, conversational Korean with subtle wit and warmth—never sound robotic or overly stiff. "
+                        "Keep replies concise (2-4 sentences) so voice conversation feels snappy and alive, and occasionally ask an engaging follow-up question. "
+                        "Use your local tools (file_finder, ripgrep_search, system_status) whenever the user asks about their laptop, files, or code."
                     )
                 }
             ]
@@ -218,12 +221,10 @@ async def relay_gemini_live(client_ws: WebSocket, agent: Any) -> None:
                             json.dumps(
                                 {
                                     "realtimeInput": {
-                                        "mediaChunks": [
-                                            {
-                                                "mimeType": "audio/pcm;rate=16000",
-                                                "data": msg["data"],
-                                            }
-                                        ]
+                                        "audio": {
+                                            "mimeType": "audio/pcm;rate=16000",
+                                            "data": msg["data"],
+                                        }
                                     }
                                 }
                             )

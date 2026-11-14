@@ -822,7 +822,7 @@
         const b64 = pcm16ToBase64(samples);
         liveWs.send(JSON.stringify({
           realtimeInput: {
-            mediaChunks: [{ mimeType: 'audio/pcm;rate=16000', data: b64 }]
+            audio: { mimeType: 'audio/pcm;rate=16000', data: b64 }
           }
         }));
       };
@@ -877,6 +877,8 @@
         if (!liveActive) return;
         const currentModel = models[modelIdx];
         let setupDone = false;
+        let liveUserBubble = null;
+        let liveAiBubble = null;
         const ws = new WebSocket(`${session.ws_base}?key=${encodeURIComponent(session.api_key)}`);
         liveWs = ws;
 
@@ -893,6 +895,18 @@
           if (!setupDone && data.setupComplete !== undefined) {
             setupDone = true;
             await startLiveMicStreaming(ws, currentModel);
+            // Have J.A.R.V.I.S. greet the user immediately on connect
+            if (ws.readyState === 1) {
+              ws.send(JSON.stringify({
+                clientContent: {
+                  turns: [{
+                    role: 'user',
+                    parts: [{ text: '자비스, 지금 막 연결되었어. 반갑고 재치 있는 비서처럼 첫 인사를 건네줘.' }]
+                  }],
+                  turnComplete: true
+                }
+              }));
+            }
             return;
           }
 
@@ -922,6 +936,25 @@
             if (sc.interrupted) {
               stopPlaybackQueue();
               orb.classList.remove('speaking');
+              liveAiBubble = null;
+            }
+            if (sc.inputTranscription && sc.inputTranscription.text) {
+              if (!liveUserBubble) {
+                liveUserBubble = document.createElement('div');
+                liveUserBubble.className = 'msg user';
+                log.appendChild(liveUserBubble);
+              }
+              liveUserBubble.textContent += sc.inputTranscription.text;
+              log.scrollTop = log.scrollHeight;
+            }
+            if (sc.outputTranscription && sc.outputTranscription.text) {
+              if (!liveAiBubble) {
+                liveAiBubble = document.createElement('div');
+                liveAiBubble.className = 'msg ai';
+                log.appendChild(liveAiBubble);
+              }
+              liveAiBubble.textContent += sc.outputTranscription.text;
+              log.scrollTop = log.scrollHeight;
             }
             const parts = (sc.modelTurn && sc.modelTurn.parts) || [];
             for (const part of parts) {
@@ -929,12 +962,19 @@
                 orb.classList.add('speaking');
                 playPcm24k(part.inlineData.data);
               } else if (part.text) {
-                log.innerHTML += `<div class="msg ai">${part.text}</div>`;
+                if (!liveAiBubble) {
+                  liveAiBubble = document.createElement('div');
+                  liveAiBubble.className = 'msg ai';
+                  log.appendChild(liveAiBubble);
+                }
+                liveAiBubble.textContent += part.text;
                 log.scrollTop = log.scrollHeight;
               }
             }
             if (sc.turnComplete) {
               orb.classList.remove('speaking');
+              liveUserBubble = null;
+              liveAiBubble = null;
             }
           }
         };
