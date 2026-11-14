@@ -67,7 +67,7 @@ class WeOnDeviceAgent:
         token_budget: int = 850,
     ) -> None:
         self.workspace_root = workspace_root
-        self.engine = InProcessLlamaCppEngine(model_path=model_path)
+        self.engine = HybridOnDeviceEngine(model_path=model_path)
         self.retriever = HybridLocalRetriever(root=workspace_root, token_budget=token_budget)
         self.monitor = IPWMonitor()
         self.weaidl6 = WeAidL6Bridge()
