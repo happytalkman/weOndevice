@@ -132,16 +132,19 @@ async def _connect_gemini_ws(uri: str):
     """Connect to Gemini Live WebSocket, bypassing broken Windows system proxies first."""
     connect_variants = [
         {"proxy": None, "compression": None, "open_timeout": 20, "max_size": 8 * 1024 * 1024},
+        {"proxy": None, "compression": None, "open_timeout": 20, "max_size": 8 * 1024 * 1024},
         {"proxy": True, "compression": None, "open_timeout": 20, "max_size": 8 * 1024 * 1024},
     ]
     last_exc: Exception | None = None
-    for kwargs in connect_variants:
+    for idx, kwargs in enumerate(connect_variants):
         try:
             return await websockets.connect(uri, **kwargs)
         except Exception as exc:
             last_exc = exc
             if hasattr(exc, "response"):
                 raise
+            if idx < len(connect_variants) - 1:
+                await asyncio.sleep(0.4)
     assert last_exc is not None
     raise last_exc
 

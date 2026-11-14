@@ -768,6 +768,7 @@
       const btn = document.getElementById('live-btn');
       if (orb) orb.classList.remove('listening', 'speaking');
       if (btn) btn.textContent = '✨ Gemini Live';
+      scheduleVoiceRestart(500);
     }
 
     async function toggleGeminiLive() {
@@ -777,6 +778,17 @@
       if (liveActive) {
         cleanupGeminiLive();
         return;
+      }
+
+      // Pause Web Speech API & TTS so Gemini Live has clean exclusive mic/speaker access
+      if (restartTimer) clearTimeout(restartTimer);
+      if (listening && recognition) {
+        try { recognition.abort(); } catch (_) {}
+        listening = false;
+      }
+      if ('speechSynthesis' in window) {
+        isSpeaking = false;
+        window.speechSynthesis.cancel();
       }
 
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
