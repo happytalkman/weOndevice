@@ -46,7 +46,8 @@ if (Test-Path ".venv") {
 $VenvPy = "$TargetDir\.venv\Scripts\python.exe"
 
 & $VenvPy -m pip install --upgrade pip
-& $VenvPy -m pip install -e ".\third_party\OpenJarvis[server]" -e . fastapi uvicorn rank-bm25 mcp huggingface_hub psutil rich click llama-cpp-python --prefer-binary
+& $VenvPy -m pip install -e ".\third_party\OpenJarvis[server]" -e . fastapi uvicorn rank-bm25 mcp huggingface_hub psutil rich click
+& $VenvPy -m pip install llama-cpp-python --only-binary=:all: --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
 if (Get-Command cargo -ErrorAction SilentlyContinue) {
     $env:PYO3_PYTHON = $VenvPy
