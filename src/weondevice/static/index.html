@@ -383,7 +383,7 @@
       log.scrollTop = log.scrollHeight;
 
       try {
-        const res = await fetch('/api/chat', {
+        const resp = await fetch('/api/chat', {
           method: 'POST',
           headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({
@@ -391,7 +391,12 @@
             glob_pattern: document.getElementById('glob-filter').value.trim() || null,
             use_rag: document.getElementById('use-rag').checked
           })
-        }).then(r => r.json());
+        });
+        const res = await resp.json();
+        if (!resp.ok || res.error) {
+          aDiv.textContent = '서버 오류: ' + (res.error || resp.statusText);
+          return;
+        }
 
         aDiv.textContent = res.answer;
         if (res.citations && res.citations.length) {

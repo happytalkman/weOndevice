@@ -31,7 +31,7 @@ class InProcessLlamaCppEngine(InferenceEngine):
     def __init__(
         self,
         model_path: Optional[str | Path] = None,
-        n_ctx: int = 2048,
+        n_ctx: int = 1024,
         n_threads: Optional[int] = None,
     ) -> None:
         self.model_path = Path(model_path) if model_path else DEFAULT_GGUF_PATH

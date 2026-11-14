@@ -100,15 +100,16 @@ class WeOnDeviceAgent:
             outputs.append(f"[quick_note]\n{res.content}")
             used.append("quick_note")
 
-        ext_match = re.search(r"\b(ppt|pptx|pdf|docx?|xlsx?|csv|txt|md|py|rs)\b", q_low)
-        if ext_match and any(k in q_low for k in ("찾아", "검색", "어디", "목록", "find", "list", "search")):
+        ext_match = re.search(r"\b(ppt|pptx|pdf|docx?|xlsx?|hwp|csv|txt|md|py|rs)\b", q_low)
+        is_file_query = any(k in q_low for k in ("찾아", "검색", "어디", "목록", "문서", "파일", "find", "list", "search"))
+        if ext_match and is_file_query:
             import os
             from pathlib import Path
 
             ext = ext_match.group(1)
             exts = (".ppt", ".pptx") if ext in ("ppt", "pptx") else (f".{ext}",)
             drive_match = re.search(r"([a-zA-Z]:\\[^\s]*)", query)
-            search_root = drive_match.group(1) if drive_match else self.workspace_root
+            search_root = drive_match.group(1) if drive_match else str(Path.home())
             found: List[str] = []
             skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
             for dirpath, dirnames, filenames in os.walk(search_root, onerror=lambda _: None):
@@ -125,6 +126,29 @@ class WeOnDeviceAgent:
                 + ("\n".join(found) if found else f"No matching {exts} files found.")
             )
             used.append("file_finder")
+        elif is_file_query and any(k in q_low for k in ("문서", "파일")):
+            import os
+            from pathlib import Path
+
+            kw = [t for t in _extract_search_keywords(query) if t not in ("문서", "파일")]
+            if kw:
+                search_root = str(Path.home())
+                found = []
+                skip_dirs = {"Windows", "Program Files", "Program Files (x86)", "ProgramData", "$Recycle.Bin", "AppData", ".git", ".venv", "node_modules"}
+                for dirpath, dirnames, filenames in os.walk(search_root, onerror=lambda _: None):
+                    dirnames[:] = [d for d in dirnames if d not in skip_dirs and not d.startswith(".")]
+                    for fn in filenames:
+                        if any(k.lower() in fn.lower() for k in kw):
+                            found.append(str(Path(dirpath) / fn))
+                            if len(found) >= 30:
+                                break
+                    if len(found) >= 30:
+                        break
+                outputs.append(
+                    f"[file_finder ({search_root}, keywords={kw})]\n"
+                    + ("\n".join(found) if found else f"'{', '.join(kw)}' 관련 파일을 찾지 못했습니다.")
+                )
+                used.append("file_finder")
 
         return "\n\n".join(outputs), used
 
@@ -179,15 +203,23 @@ class WeOnDeviceAgent:
             Message(role=Role.USER, content=user_content),
         ]
 
-        gen = self.engine.generate(
-            messages,
-            model=self.engine.model_path.name,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-        usage = gen.get("usage", {})
+        try:
+            gen = self.engine.generate(
+                messages,
+                model=self.engine.model_path.name,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            answer_text = gen["content"].strip()
+            usage = gen.get("usage", {})
+        except Exception as exc:
+            fallback_body = tool_output or packed_context or "로컬 검색 결과가 없습니다."
+            answer_text = f"{fallback_body}\n\n(참고: 로컬 LLM 추론 생략 - {exc})"
+            gen = {"model": self.engine.model_path.name}
+            usage = {}
+
         prompt_tokens = int(usage.get("prompt_tokens", max(1, len(user_content) // 4)))
-        completion_tokens = int(usage.get("completion_tokens", max(1, len(gen["content"]) // 4)))
+        completion_tokens = int(usage.get("completion_tokens", max(1, len(answer_text) // 4)))
 
         telemetry = self.monitor.finish_span(
             span,
@@ -205,7 +237,7 @@ class WeOnDeviceAgent:
         )
 
         return AgentTurnResult(
-            answer=gen["content"].strip(),
+            answer=answer_text,
             citations=retrieval["citations"],
             telemetry=telemetry,
             backend=retrieval["backend"],
