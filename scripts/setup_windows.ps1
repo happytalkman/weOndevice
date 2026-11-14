@@ -25,6 +25,10 @@ if (-not (Test-Path "third_party\weaidL6")) {
         Write-Host "weaidL6 clone skipped (optional)." -ForegroundColor DarkYellow
     }
 }
+if (-not (Test-Path "third_party\ppt-master")) {
+    Write-Host "Cloning hugohe3/ppt-master..." -ForegroundColor Yellow
+    git clone --depth 1 https://github.com/hugohe3/ppt-master.git third_party\ppt-master
+}
 
 # Find signed Python (avoid uv's unsigned python-build-standalone / venv launcher on Smart App Control PCs)
 $PyCmd = $null
@@ -46,7 +50,7 @@ if (Test-Path ".venv") {
 $VenvPy = "$TargetDir\.venv\Scripts\python.exe"
 
 & $VenvPy -m pip install --upgrade pip
-& $VenvPy -m pip install -e ".\third_party\OpenJarvis[server]" -e . fastapi uvicorn rank-bm25 mcp huggingface_hub psutil rich click
+& $VenvPy -m pip install -e ".\third_party\OpenJarvis[server]" -e . fastapi uvicorn rank-bm25 mcp huggingface_hub psutil rich click websockets python-pptx Pillow XlsxWriter PyYAML
 & $VenvPy -m pip install llama-cpp-python --only-binary=:all: --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
 
 if (Get-Command cargo -ErrorAction SilentlyContinue) {

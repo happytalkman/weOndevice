@@ -1,5 +1,7 @@
 """Tests for weOndevice (happytalkman/ripgrep + OpenJarvis integration)."""
 
+from pathlib import Path
+
 from weondevice.agent import _resolve_search_root
 from weondevice.integrations.weaidl6_bridge import WeAidL6InspectTool
 from weondevice.tools.laptop_tools import QuickNoteTool, SystemStatusTool
@@ -54,3 +56,21 @@ def test_laptop_tools_and_weaidl6_bridge(tmp_path):
     # Korean particle stripping fallback
     root = _resolve_search_root("c:\\Users에서 pdf 파일 찾아줘", ".")
     assert "에서" not in root
+
+
+def test_pptmaster_bridge_and_endpoints(tmp_path: Path) -> None:
+    from fastapi.testclient import TestClient
+    from weondevice.integrations.pptmaster_bridge import PPTMasterBridge
+    from weondevice.server import app
+
+    bridge = PPTMasterBridge(workspace_root=".")
+    res = bridge.generate_deck("온디바이스 AI 테스트 발표", num_slides=4)
+    assert res["ok"] is True
+    assert Path(res["pptx_path"]).exists()
+    assert res["slide_count"] == 4
+
+    client = TestClient(app)
+    r_dl = client.get(res["download_url"])
+    assert r_dl.status_code == 200
+    assert len(r_dl.content) > 1000
+

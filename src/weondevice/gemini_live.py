@@ -97,6 +97,20 @@ def _tool_declarations() -> List[Dict[str, Any]]:
                         },
                     },
                 },
+                {
+                    "name": "pptmaster_generate",
+                    "description": "Create an editable PowerPoint (.pptx) presentation deck on the user's laptop using ppt-master.",
+                    "parameters": {
+                        "type": "OBJECT",
+                        "properties": {
+                            "topic": {
+                                "type": "STRING",
+                                "description": "Presentation topic or title requested by the user.",
+                            }
+                        },
+                        "required": ["topic"],
+                    },
+                },
             ]
         }
     ]

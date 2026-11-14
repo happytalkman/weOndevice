@@ -145,6 +145,37 @@ async def gemini_live_session() -> Dict[str, Any]:
     }
 
 
+class PPTGenerateRequest(BaseModel):
+    topic: str
+    num_slides: int = 5
+
+
+@app.post("/api/ppt/generate")
+def ppt_generate(req: PPTGenerateRequest) -> Dict[str, Any]:
+    agent = get_agent()
+    res = agent.ppt_tool.bridge.generate_deck(
+        req.topic,
+        engine=agent.engine,
+        num_slides=req.num_slides,
+    )
+    return res
+
+
+@app.get("/api/ppt/download/{filename}")
+def ppt_download(filename: str) -> Any:
+    from fastapi.responses import FileResponse
+
+    safe_name = Path(filename).name
+    target = get_agent().ppt_tool.bridge.exports_dir / safe_name
+    if not target.exists():
+        return JSONResponse(status_code=404, content={"error": "파일을 찾을 수 없습니다."})
+    return FileResponse(
+        path=str(target),
+        filename=safe_name,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+
+
 @app.post("/api/gemini-tool")
 def gemini_tool(req: GeminiToolRequest) -> Dict[str, Any]:
     agent = get_agent()
@@ -157,6 +188,8 @@ def gemini_tool(req: GeminiToolRequest) -> Dict[str, Any]:
     elif name == "file_finder":
         out, _ = agent._route_laptop_tools(args.get("query", ""))
         out = out or "일치하는 파일을 찾지 못했습니다."
+    elif name == "pptmaster_generate":
+        out = agent.ppt_tool.execute(topic=args.get("topic", "프레젠테이션")).content
     else:
         out = "Unsupported tool"
     return {"result": out}

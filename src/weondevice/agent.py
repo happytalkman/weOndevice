@@ -11,6 +11,7 @@ from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import Message, Role
 
 from weondevice.engine import HybridOnDeviceEngine
+from weondevice.integrations.pptmaster_bridge import PPTMasterGenerateTool
 from weondevice.integrations.weaidl6_bridge import WeAidL6Bridge, WeAidL6InspectTool
 from weondevice.telemetry import IPWMonitor, QueryTelemetry
 from weondevice.tools.laptop_tools import (
@@ -115,6 +116,7 @@ class WeOnDeviceAgent:
         self.file_read_tool = LocalFileReadTool(workspace_root=workspace_root)
         self.note_tool = QuickNoteTool()
         self.weaidl6_tool = WeAidL6InspectTool()
+        self.ppt_tool = PPTMasterGenerateTool(workspace_root=workspace_root, engine=self.engine)
         self.history: List[Message] = []
 
     def _route_laptop_tools(self, query: str) -> tuple[str, List[str]]:
@@ -125,6 +127,12 @@ class WeOnDeviceAgent:
         q_low = query.lower()
         outputs: List[str] = []
         used: List[str] = []
+
+        if any(k in q_low for k in ("ppt", "피피티", "발표자료", "슬라이드", "프레젠테이션")) and any(
+            v in q_low for v in ("만들", "생성", "제작", "작성", "짜줘", "해줘", "create", "make")
+        ):
+            outputs.append(f"[pptmaster_generate]\n{self.ppt_tool.execute(topic=query).content}")
+            used.append("pptmaster_generate")
 
         if "weaidl6" in q_low:
             res = self.weaidl6_tool.execute()
