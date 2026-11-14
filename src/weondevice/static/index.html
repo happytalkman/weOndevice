@@ -568,6 +568,7 @@
       }
 
       // Pause STT while AI is speaking so mic doesn't pick up speaker audio
+      isSpeaking = true;
       if (listening && recognition) {
         try { recognition.abort(); } catch (_) {}
       }
@@ -575,7 +576,6 @@
       const sentences = splitKoreanSentences(clean);
       const voice = pickKoreanVoice();
       const orb = document.querySelector('.orb');
-      isSpeaking = true;
       orb.classList.add('speaking');
 
       let idx = 0;
@@ -798,9 +798,15 @@
       } catch (_) {
         livePlaybackCtx = new AudioCtx();
       }
+      try {
+        await liveCaptureCtx.resume();
+        await livePlaybackCtx.resume();
+      } catch (_) {}
       nextPlayTime = 0;
       try {
-        liveStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        liveStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+        });
       } catch (micErr) {
         log.innerHTML += `<div class="msg ai">마이크 권한 오류: ${micErr.message || micErr}</div>`;
         cleanupGeminiLive();
@@ -808,6 +814,8 @@
       }
       liveSource = liveCaptureCtx.createMediaStreamSource(liveStream);
       liveProc = liveCaptureCtx.createScriptProcessor(4096, 1, 1);
+      const muteGain = liveCaptureCtx.createGain();
+      muteGain.gain.value = 0;
       liveProc.onaudioprocess = (e) => {
         if (!liveActive || !liveWs || liveWs.readyState !== 1) return;
         const samples = downsampleTo16k(e.inputBuffer.getChannelData(0), liveCaptureCtx.sampleRate);
@@ -819,7 +827,8 @@
         }));
       };
       liveSource.connect(liveProc);
-      liveProc.connect(liveCaptureCtx.destination);
+      liveProc.connect(muteGain);
+      muteGain.connect(liveCaptureCtx.destination);
     }
 
     async function toggleGeminiLive() {
