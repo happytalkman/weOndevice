@@ -161,6 +161,33 @@ def ppt_generate(req: PPTGenerateRequest) -> Dict[str, Any]:
     return res
 
 
+@app.post("/api/ppt/from-file")
+async def ppt_from_file(
+    file: UploadFile = File(...),
+    topic: str = "",
+    num_slides: int = 5,
+) -> Dict[str, Any]:
+    agent = get_agent()
+    bridge = agent.ppt_tool.bridge
+    safe_name = Path(file.filename or "document.txt").name
+    tmp_path = bridge.exports_dir / f"upload_{safe_name}"
+    tmp_path.write_bytes(await file.read())
+    try:
+        src_text = bridge.extract_source_text(tmp_path)
+    finally:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+    deck_topic = topic.strip() or Path(safe_name).stem
+    return bridge.generate_deck(
+        deck_topic,
+        engine=agent.engine,
+        num_slides=num_slides,
+        source_text=src_text,
+    )
+
+
 @app.get("/api/ppt/list")
 def ppt_list() -> Dict[str, Any]:
     exports_dir = get_agent().ppt_tool.bridge.exports_dir

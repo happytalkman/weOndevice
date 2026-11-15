@@ -86,12 +86,22 @@ def _default_outline(topic: str, num_slides: int = 5) -> Dict[str, Any]:
     }
 
 
-def _generate_outline_with_llm(topic: str, engine: Any, num_slides: int = 5) -> Dict[str, Any]:
+def _generate_outline_with_llm(
+    topic: str,
+    engine: Any,
+    num_slides: int = 5,
+    source_text: Optional[str] = None,
+) -> Dict[str, Any]:
     if engine is None:
         return _default_outline(topic, num_slides=num_slides)
 
+    src_block = ""
+    if source_text:
+        src_block = f"\nUse this source material as the factual basis:\n---\n{source_text[:6000]}\n---\n"
+
     prompt = (
         f"Create a concise, executive Korean presentation outline for the topic: '{topic}'.\n"
+        f"{src_block}"
         f"Return ONLY valid JSON (no markdown fences) with this exact schema:\n"
         "{\n"
         '  "title": "Deck main title",\n'
@@ -217,14 +227,37 @@ class PPTMasterBridge:
             "exports_dir": str(self.exports_dir),
         }
 
+    def extract_source_text(self, file_path: Path) -> str:
+        """Extract text/Markdown from a document using ppt-master source_to_md.py or direct read."""
+        if self.repo_root is not None:
+            s2m = self.repo_root / "skills" / "ppt-master" / "scripts" / "source_to_md.py"
+            if s2m.exists():
+                proc = subprocess.run(
+                    [sys.executable, str(s2m), str(file_path)],
+                    capture_output=True,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    timeout=30,
+                )
+                if proc.returncode == 0 and (proc.stdout or "").strip():
+                    return proc.stdout.strip()
+        return file_path.read_text(encoding="utf-8", errors="replace")
+
     def generate_deck(
         self,
         topic: str,
         *,
         engine: Any = None,
         num_slides: int = 5,
+        source_text: Optional[str] = None,
     ) -> Dict[str, Any]:
-        outline = _generate_outline_with_llm(topic, engine=engine, num_slides=num_slides)
+        outline = _generate_outline_with_llm(
+            topic,
+            engine=engine,
+            num_slides=num_slides,
+            source_text=source_text,
+        )
         ts = time.strftime("%Y%m%d_%H%M%S")
         slug = re.sub(r"[^A-Za-z0-9가-힣_-]+", "_", outline.get("title", "presentation")).strip("_")[:32] or "deck"
         project_dir = self.exports_dir / f"proj_{slug}_{ts}"

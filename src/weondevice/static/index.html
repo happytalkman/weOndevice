@@ -300,6 +300,7 @@
       <div class="card-title">PPT Master (자동 PPTX 생성)</div>
       <div style="display:flex;flex-direction:column;gap:6px;">
         <input id="ppt-topic" type="text" placeholder="주제 입력 (예: AI 비서 사업계획서)" style="font-size:0.8rem;padding:6px 8px;" />
+        <input id="ppt-file" type="file" accept=".txt,.md,.pdf,.docx,.py,.csv,.json" style="font-size:0.74rem;color:var(--muted);" />
         <button id="ppt-btn" onclick="generatePpt()" style="padding:6px 10px;font-size:0.8rem;">📊 PPT 생성 (.pptx)</button>
         <div id="ppt-msg" class="sub"></div>
         <div id="ppt-list" class="sub" style="display:flex;flex-direction:column;gap:3px;"></div>
@@ -544,23 +545,36 @@
 
     async function generatePpt() {
       const topic = document.getElementById('ppt-topic').value.trim();
+      const fileInput = document.getElementById('ppt-file');
+      const file = fileInput && fileInput.files && fileInput.files[0];
       const msgEl = document.getElementById('ppt-msg');
       const btn = document.getElementById('ppt-btn');
-      if (!topic) {
-        msgEl.textContent = 'PPT 주제를 입력해 주세요.';
+      if (!topic && !file) {
+        msgEl.textContent = '주제를 입력하거나 문서 파일을 선택해 주세요.';
         return;
       }
       btn.disabled = true;
-      msgEl.textContent = 'PPT Master가 슬라이드를 생성 중...';
+      msgEl.textContent = file ? `문서(${file.name}) 분석 후 PPT 생성 중...` : 'PPT Master가 슬라이드를 생성 중...';
       try {
-        const resp = await fetch('/api/ppt/generate', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({ topic, num_slides: 5 })
-        });
+        let resp;
+        if (file) {
+          const fd = new FormData();
+          fd.append('file', file);
+          resp = await fetch(`/api/ppt/from-file?topic=${encodeURIComponent(topic)}&num_slides=5`, {
+            method: 'POST',
+            body: fd
+          });
+        } else {
+          resp = await fetch('/api/ppt/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ topic, num_slides: 5 })
+          });
+        }
         const res = await resp.json();
         if (res.ok && res.download_url) {
           msgEl.innerHTML = `✅ ${res.slide_count}장 생성 완료! <a href="${res.download_url}" style="color:var(--accent);font-weight:700;" download>📥 ${res.filename} 다운로드</a>`;
+          if (fileInput) fileInput.value = '';
           refreshPptList();
         } else {
           msgEl.textContent = '생성 오류: ' + (res.error || '알 수 없는 오류');
