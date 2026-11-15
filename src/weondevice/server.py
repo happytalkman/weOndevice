@@ -161,6 +161,22 @@ def ppt_generate(req: PPTGenerateRequest) -> Dict[str, Any]:
     return res
 
 
+@app.get("/api/ppt/list")
+def ppt_list() -> Dict[str, Any]:
+    exports_dir = get_agent().ppt_tool.bridge.exports_dir
+    files = sorted(exports_dir.glob("*.pptx"), key=lambda p: p.stat().st_mtime, reverse=True)[:10]
+    return {
+        "files": [
+            {
+                "filename": p.name,
+                "size_kb": round(p.stat().st_size / 1024, 1),
+                "download_url": f"/api/ppt/download/{p.name}",
+            }
+            for p in files
+        ]
+    }
+
+
 @app.get("/api/ppt/download/{filename}")
 def ppt_download(filename: str) -> Any:
     from urllib.parse import quote

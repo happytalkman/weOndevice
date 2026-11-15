@@ -302,6 +302,7 @@
         <input id="ppt-topic" type="text" placeholder="주제 입력 (예: AI 비서 사업계획서)" style="font-size:0.8rem;padding:6px 8px;" />
         <button id="ppt-btn" onclick="generatePpt()" style="padding:6px 10px;font-size:0.8rem;">📊 PPT 생성 (.pptx)</button>
         <div id="ppt-msg" class="sub"></div>
+        <div id="ppt-list" class="sub" style="display:flex;flex-direction:column;gap:3px;"></div>
       </div>
     </div>
 
@@ -474,6 +475,14 @@
         }
 
         aDiv.textContent = res.answer;
+        const pptMatch = (res.answer || '').match(/(\/api\/ppt\/download\/[^\s)]+\.pptx)/);
+        if (pptMatch) {
+          const dl = document.createElement('div');
+          dl.style.marginTop = '8px';
+          dl.innerHTML = `<a href="${pptMatch[1]}" download style="display:inline-block;padding:6px 12px;border-radius:8px;background:rgba(56,189,248,0.18);border:1px solid var(--accent);color:var(--accent);font-weight:700;text-decoration:none;">📥 PPTX 파일 다운로드</a>`;
+          aDiv.appendChild(dl);
+          refreshPptList();
+        }
         if (res.citations && res.citations.length) {
           const cDiv = document.createElement('div');
           cDiv.className = 'citations';
@@ -520,6 +529,19 @@
       document.getElementById('gem-msg').textContent = 'Gemini Live 키 저장 완료! 하단 ✨ Gemini Live 버튼을 누르세요.';
     }
 
+    async function refreshPptList() {
+      const listEl = document.getElementById('ppt-list');
+      if (!listEl) return;
+      try {
+        const resp = await fetch('/api/ppt/list');
+        const data = await resp.json();
+        const files = data.files || [];
+        listEl.innerHTML = files.slice(0, 4).map(f =>
+          `<a href="${f.download_url}" download style="color:var(--accent);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">📄 ${f.filename} (${f.size_kb}KB)</a>`
+        ).join('');
+      } catch (_) {}
+    }
+
     async function generatePpt() {
       const topic = document.getElementById('ppt-topic').value.trim();
       const msgEl = document.getElementById('ppt-msg');
@@ -539,6 +561,7 @@
         const res = await resp.json();
         if (res.ok && res.download_url) {
           msgEl.innerHTML = `✅ ${res.slide_count}장 생성 완료! <a href="${res.download_url}" style="color:var(--accent);font-weight:700;" download>📥 ${res.filename} 다운로드</a>`;
+          refreshPptList();
         } else {
           msgEl.textContent = '생성 오류: ' + (res.error || '알 수 없는 오류');
         }
@@ -959,6 +982,7 @@
                 });
                 const td = await tr.json();
                 responses.push({ id: fc.id, name: fc.name, response: { result: td.result || '' } });
+                if (fc.name === 'pptmaster_generate') refreshPptList();
               } catch (toolErr) {
                 responses.push({ id: fc.id, name: fc.name, response: { result: String(toolErr) } });
               }
@@ -1046,6 +1070,7 @@
     }
 
     refreshStatus();
+    refreshPptList();
     initHandsFreeVoice();
   </script>
 </body>
